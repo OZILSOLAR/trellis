@@ -23,6 +23,29 @@ export function proofUriToScVal(proofUri: string): xdr.ScVal {
   return trimmed ? nativeToScVal(trimmed, { type: 'string' }) : xdr.ScVal.scvVoid()
 }
 
+/** Matches a non-negative integer amount in the token's base units (stroops). */
+const BASE_UNIT_AMOUNT = /^\d+$/
+
+/**
+ * Validates a resolver's split of a disputed milestone before it is signed.
+ *
+ * Mirrors `resolve_dispute_split`'s on-chain checks: both legs must be
+ * non-negative integers (base units) and together equal exactly what is still
+ * escrowed for the milestone. Returns an error message, or `null` when valid.
+ */
+export function validateSplit(payerAmount: string, payeeAmount: string, remaining: bigint): string | null {
+  const payer = payerAmount.trim()
+  const payee = payeeAmount.trim()
+  if (!payer || !payee) return 'Enter an amount for both the payer and the payee.'
+  if (!BASE_UNIT_AMOUNT.test(payer) || !BASE_UNIT_AMOUNT.test(payee)) {
+    return 'Amounts must be non-negative whole numbers.'
+  }
+  if (BigInt(payer) + BigInt(payee) !== remaining) {
+    return `Payer and payee amounts must sum to the remaining escrow (${remaining.toString()}).`
+  }
+  return null
+}
+
 const MAX_RETRIES = 3
 const BASE_FEE = 100_000
 
@@ -34,11 +57,17 @@ export default function MilestoneActions({ milestone, agreement, onSuccess }: Mi
   const [proofUri, setProofUri] = useState('')
   const [showConfirm, setShowConfirm] = useState<string | null>(null)
   const [isRetrying, setIsRetrying] = useState(false)
+  const [showSplitForm, setShowSplitForm] = useState(false)
+  const [splitPayer, setSplitPayer] = useState('')
+  const [splitPayee, setSplitPayee] = useState('')
   const pendingAction = useRef<string | null>(null)
 
   const isLoading = status === 'building' || status === 'signing' || status === 'submitting'
   const isUserPayer = wallet.publicKey === agreement.payer
   const isUserPayee = wallet.publicKey === agreement.payee
+  const isUserResolver = !!wallet.publicKey && wallet.publicKey === agreement.dispute_resolver
+  const remainingEscrow = BigInt(milestone.amount || '0')
+  const splitError = validateSplit(splitPayer, splitPayee, remainingEscrow)
 
   // lock_funds, submit_work and approve_and_release take no caller argument —
   // the contract derives the signer from agreement.payer / agreement.payee via
@@ -136,6 +165,57 @@ export default function MilestoneActions({ milestone, agreement, onSuccess }: Mi
     }
   }
 
+  // resolve_dispute and resolve_dispute_split take no caller argument — the
+  // contract gates both on agreement.dispute_resolver.require_auth().
+  const handleResolveDispute = async (refundToPayer: boolean, fee?: string) => {
+    if (!wallet.publicKey) return
+
+    pendingAction.current = refundToPayer ? 'resolve_dispute_refund' : 'resolve_dispute_pay'
+    try {
+      const idBytes = hexToBytes(agreement.agreement_id)
+      const args = [
+        nativeToScVal(idBytes, { type: 'bytes' }),
+        nativeToScVal(milestone.id, { type: 'u32' }),
+        nativeToScVal(refundToPayer, { type: 'bool' }),
+      ]
+
+      await invoke('resolve_dispute', args, wallet.publicKey, fee)
+      toast.success({ title: refundToPayer ? 'Dispute resolved: payer refunded' : 'Dispute resolved: payee paid' })
+      setShowConfirm(null)
+      pendingAction.current = null
+      onSuccess?.()
+    } catch (err) {
+      toast.error({ title: 'Resolve dispute failed', message: err instanceof Error ? err.message : 'Unknown error' })
+    }
+  }
+
+  const handleResolveSplit = async (fee?: string) => {
+    if (!wallet.publicKey) return
+    // Never ask the wallet to sign a split the contract would reject.
+    if (splitError) return
+
+    pendingAction.current = 'resolve_dispute_split'
+    try {
+      const idBytes = hexToBytes(agreement.agreement_id)
+      const args = [
+        nativeToScVal(idBytes, { type: 'bytes' }),
+        nativeToScVal(milestone.id, { type: 'u32' }),
+        nativeToScVal(BigInt(splitPayer.trim()), { type: 'i128' }),
+        nativeToScVal(BigInt(splitPayee.trim()), { type: 'i128' }),
+      ]
+
+      await invoke('resolve_dispute_split', args, wallet.publicKey, fee)
+      toast.success({ title: 'Dispute resolved with split' })
+      setShowSplitForm(false)
+      setSplitPayer('')
+      setSplitPayee('')
+      pendingAction.current = null
+      onSuccess?.()
+    } catch (err) {
+      toast.error({ title: 'Split resolution failed', message: err instanceof Error ? err.message : 'Unknown error' })
+    }
+  }
+
   const handleRetry = async () => {
     if (isRetrying) return
     setIsRetrying(true)
@@ -145,6 +225,9 @@ export default function MilestoneActions({ milestone, agreement, onSuccess }: Mi
       else if (pendingAction.current === 'submit_work') await handleSubmitWork()
       else if (pendingAction.current === 'approve_and_release') await handleApproveRelease()
       else if (pendingAction.current === 'raise_dispute') await handleRaiseDispute()
+      else if (pendingAction.current === 'resolve_dispute_refund') await handleResolveDispute(true)
+      else if (pendingAction.current === 'resolve_dispute_pay') await handleResolveDispute(false)
+      else if (pendingAction.current === 'resolve_dispute_split') await handleResolveSplit()
     } catch (err) {
       toast.error({ title: 'Retry failed', message: err instanceof Error ? err.message : 'Unknown error' })
     } finally {
@@ -189,6 +272,27 @@ export default function MilestoneActions({ milestone, agreement, onSuccess }: Mi
       action: () => setShowConfirm('dispute'),
       color: 'bg-red-500 hover:bg-red-400',
     })
+  }
+
+  // Only the agreement's dispute resolver can settle a Disputed milestone.
+  if (milestone.status === 'Disputed' && wallet.connected && isUserResolver) {
+    actions.push(
+      {
+        label: 'Refund Payer',
+        action: () => setShowConfirm('resolve_refund'),
+        color: 'bg-orange-500 hover:bg-orange-400',
+      },
+      {
+        label: 'Pay Payee',
+        action: () => setShowConfirm('resolve_pay'),
+        color: 'bg-green-500 hover:bg-green-400',
+      },
+      {
+        label: 'Split',
+        action: () => setShowSplitForm(true),
+        color: 'bg-purple-500 hover:bg-purple-400',
+      },
+    )
   }
 
   if (actions.length === 0) {
@@ -260,6 +364,64 @@ export default function MilestoneActions({ milestone, agreement, onSuccess }: Mi
         </div>
       )}
 
+      {/* Resolver split form */}
+      {showSplitForm && (
+        <div className="space-y-2 p-3 bg-navy-700 dark:bg-navy-700 light:bg-gray-100 rounded">
+          <p className="text-xs text-gray-300 dark:text-gray-300 light:text-gray-700">
+            Split the remaining escrow of <span className="font-mono">{remainingEscrow.toString()}</span> between the parties.
+          </p>
+          <div className="flex gap-2 flex-wrap">
+            <label className="flex flex-col text-xs text-gray-400 dark:text-gray-400 light:text-gray-600">
+              To payer
+              <input
+                type="text"
+                inputMode="numeric"
+                placeholder="0"
+                aria-label="Amount to payer"
+                value={splitPayer}
+                onChange={(e) => setSplitPayer(e.target.value)}
+                className="mt-1 w-32 px-3 py-2 bg-navy-800 dark:bg-navy-800 light:bg-white border border-navy-600 dark:border-navy-600 light:border-gray-300 text-white dark:text-white light:text-gray-900 text-sm rounded focus:outline-none focus:border-cyan-400"
+              />
+            </label>
+            <label className="flex flex-col text-xs text-gray-400 dark:text-gray-400 light:text-gray-600">
+              To payee
+              <input
+                type="text"
+                inputMode="numeric"
+                placeholder="0"
+                aria-label="Amount to payee"
+                value={splitPayee}
+                onChange={(e) => setSplitPayee(e.target.value)}
+                className="mt-1 w-32 px-3 py-2 bg-navy-800 dark:bg-navy-800 light:bg-white border border-navy-600 dark:border-navy-600 light:border-gray-300 text-white dark:text-white light:text-gray-900 text-sm rounded focus:outline-none focus:border-cyan-400"
+              />
+            </label>
+          </div>
+          {(splitPayer || splitPayee) && splitError && (
+            <p className="text-red-400 text-xs" role="alert">{splitError}</p>
+          )}
+          <div className="flex gap-2">
+            <button
+              onClick={() => handleResolveSplit()}
+              disabled={isLoading || !!splitError}
+              className="px-3 py-1 bg-purple-500 hover:bg-purple-400 text-white dark:text-white light:text-gray-900 text-xs rounded disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isLoading ? 'Processing...' : 'Resolve Split'}
+            </button>
+            <button
+              onClick={() => {
+                setShowSplitForm(false)
+                setSplitPayer('')
+                setSplitPayee('')
+              }}
+              disabled={isLoading}
+              className="px-3 py-1 bg-navy-600 dark:bg-navy-600 light:bg-gray-200 hover:bg-navy-500 dark:hover:bg-navy-500 light:hover:bg-gray-300 text-white dark:text-white light:text-gray-900 text-xs rounded disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Confirmation Modal */}
       {showConfirm && (
         <div className="p-3 bg-navy-700 dark:bg-navy-700 light:bg-gray-100 rounded border border-yellow-500/50">
@@ -267,6 +429,8 @@ export default function MilestoneActions({ milestone, agreement, onSuccess }: Mi
             {showConfirm === 'lock' && `Lock ${milestone.amount} tokens for milestone ${milestone.id}?`}
             {showConfirm === 'approve' && `Approve and release ${milestone.amount} tokens to payee?`}
             {showConfirm === 'dispute' && 'Raise a dispute for this milestone?'}
+            {showConfirm === 'resolve_refund' && `Refund the remaining ${remainingEscrow.toString()} tokens to the payer?`}
+            {showConfirm === 'resolve_pay' && `Release the remaining ${remainingEscrow.toString()} tokens to the payee?`}
           </p>
           <div className="flex gap-2">
             <button
@@ -274,6 +438,8 @@ export default function MilestoneActions({ milestone, agreement, onSuccess }: Mi
                 if (showConfirm === 'lock') handleLockFunds()
                 else if (showConfirm === 'approve') handleApproveRelease()
                 else if (showConfirm === 'dispute') handleRaiseDispute()
+                else if (showConfirm === 'resolve_refund') handleResolveDispute(true)
+                else if (showConfirm === 'resolve_pay') handleResolveDispute(false)
               }}
               disabled={isLoading}
               className="px-3 py-1 bg-cyan-500 hover:bg-cyan-400 text-white dark:text-white light:text-gray-900 text-xs rounded disabled:opacity-50"
