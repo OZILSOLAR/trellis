@@ -3111,3 +3111,163 @@ fn test_rotate_resolver_preserves_escrow_and_release_state() {
         "rotation must not move the payer's remaining balance"
     );
 }
+
+// ---------------------------------------------------------------------------
+// release_partial rejection paths (#613)
+//
+// The amount guard (`amount <= 0 || amount > remaining_before`) and the status
+// guard (only `Funded` / `WorkSubmitted` may be partially released) each get
+// an asserting test, and every rejected call must leave token balances and
+// stored agreement state exactly as they were.
+// ---------------------------------------------------------------------------
+
+/// Balances of (escrow contract, payer, payee) plus the stored agreement —
+/// everything a rejected `release_partial` must leave untouched. The
+/// agreement includes `released_amounts`, the counter the call would bump.
+fn release_partial_state(
+    env: &Env,
+    client: &TrellisContractClient<'static>,
+    token_address: &Address,
+    payer: &Address,
+    payee: &Address,
+    id: &BytesN<32>,
+) -> (i128, i128, i128, crate::types::Agreement) {
+    let token_client = token::TokenClient::new(env, token_address);
+    (
+        token_client.balance(&client.address),
+        token_client.balance(payer),
+        token_client.balance(payee),
+        client.get_agreement(id),
+    )
+}
+
+#[test]
+fn test_release_partial_rejects_invalid_amounts() {
+    let (env, payer, payee, dispute_resolver, token_address, client) = setup();
+    let id = agreement_id(&env, 140);
+
+    client.init(
+        &id,
+        &payer,
+        &payee,
+        &token_address,
+        &one_milestone(&env, 500),
+        &dispute_resolver,
+    );
+    client.lock_funds(&id, &0u32);
+
+    let before = release_partial_state(&env, &client, &token_address, &payer, &payee, &id);
+    assert_eq!(before.0, 500, "the full milestone must be escrowed");
+
+    for amount in [0i128, -1, 501, i128::MIN, i128::MAX] {
+        assert_eq!(
+            client.try_release_partial(&id, &0u32, &amount),
+            Err(Ok(TrellisError::InvalidReleaseAmount)),
+            "release_partial({amount}) on a 500 milestone must be rejected"
+        );
+        assert_eq!(
+            release_partial_state(&env, &client, &token_address, &payer, &payee, &id),
+            before,
+            "a rejected release_partial({amount}) must not move tokens or touch storage"
+        );
+    }
+
+    // The boundary itself is accepted, proving the guard is `>` not `>=`.
+    assert_eq!(client.try_release_partial(&id, &0u32, &500i128), Ok(Ok(0)));
+}
+
+#[test]
+fn test_release_partial_rejects_amount_exceeding_what_is_left() {
+    let (env, payer, payee, dispute_resolver, token_address, client) = setup();
+    let id = agreement_id(&env, 141);
+
+    client.init(
+        &id,
+        &payer,
+        &payee,
+        &token_address,
+        &one_milestone(&env, 500),
+        &dispute_resolver,
+    );
+    client.lock_funds(&id, &0u32);
+    assert_eq!(client.release_partial(&id, &0u32, &200i128), 300);
+
+    let before = release_partial_state(&env, &client, &token_address, &payer, &payee, &id);
+    assert_eq!(before.0, 300);
+    assert_eq!(before.2, 200);
+
+    // 301 fits within the milestone's original 500 but not the 300 left, so
+    // only a guard measured against the *remaining* amount rejects it.
+    for amount in [301i128, 500] {
+        assert_eq!(
+            client.try_release_partial(&id, &0u32, &amount),
+            Err(Ok(TrellisError::InvalidReleaseAmount)),
+            "release_partial({amount}) with only 300 left must be rejected"
+        );
+        assert_eq!(
+            release_partial_state(&env, &client, &token_address, &payer, &payee, &id),
+            before,
+            "a rejected second release must not move tokens or touch storage"
+        );
+    }
+
+    // Exactly the remainder is still accepted and completes the milestone.
+    assert_eq!(client.try_release_partial(&id, &0u32, &300i128), Ok(Ok(0)));
+    assert_eq!(
+        client.get_milestone(&id, &0u32).unwrap().status,
+        EscrowStatus::Completed
+    );
+}
+
+#[test]
+fn test_release_partial_rejects_wrong_states() {
+    let (env, payer, payee, dispute_resolver, token_address, client) = setup();
+
+    // Milestone 0 stays Pending, 1 is Disputed, 2 is Completed.
+    let id = agreement_id(&env, 142);
+    client.init(
+        &id,
+        &payer,
+        &payee,
+        &token_address,
+        &crate::test_utils::milestones_from_amounts(&env, &[100, 200, 300]),
+        &dispute_resolver,
+    );
+
+    client.lock_funds(&id, &1u32);
+    client.raise_dispute(&payer, &id, &1u32, &None);
+
+    client.lock_funds(&id, &2u32);
+    client.submit_work(&id, &2u32, &None);
+    client.approve_and_release(&id, &2u32);
+
+    let expected = [
+        (0u32, EscrowStatus::Pending),
+        (1u32, EscrowStatus::Disputed),
+        (2u32, EscrowStatus::Completed),
+    ];
+    for (milestone_id, status) in expected.iter() {
+        assert_eq!(
+            client.get_milestone(&id, milestone_id).unwrap().status,
+            *status,
+            "fixture: milestone {milestone_id} must be {status:?}"
+        );
+    }
+
+    let before = release_partial_state(&env, &client, &token_address, &payer, &payee, &id);
+
+    for (milestone_id, status) in expected.iter() {
+        // A valid amount (1) isolates the status guard from the amount guard.
+        assert_eq!(
+            client.try_release_partial(&id, milestone_id, &1i128),
+            Err(Ok(TrellisError::InvalidStateTransition)),
+            "release_partial on a {status:?} milestone must be rejected"
+        );
+        assert_eq!(
+            release_partial_state(&env, &client, &token_address, &payer, &payee, &id),
+            before,
+            "a rejected release_partial on a {status:?} milestone must not move \
+             tokens or touch storage"
+        );
+    }
+}
