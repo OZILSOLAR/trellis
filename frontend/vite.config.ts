@@ -1,10 +1,11 @@
 // defineConfig comes from vitest/config rather than vite so the `test` block
 // below is typed; it is a superset of vite's own defineConfig.
 import { defineConfig } from 'vitest/config'
-import { loadEnv } from 'vite'
+import { loadEnv, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
+import { buildCsp, buildHeadersFile, type SecurityHeaderEnv } from './security-headers.ts'
 
 // Read version from package.json so the string is always consistent with the
 // published package version, regardless of whether npm_package_version is set
@@ -20,6 +21,30 @@ function resolveAppVersion(): string {
   }
 }
 
+// Emits `dist/_headers` (CSP + security headers, honoured by Netlify and
+// Cloudflare Pages) and a matching `<meta>` CSP in index.html for hosts that
+// ignore `_headers`. Build-only: the dev server needs inline scripts and an
+// HMR websocket that the production policy deliberately forbids. Both
+// builders throw if the policy ever gains 'unsafe-eval', failing the build.
+function securityHeadersPlugin(env: SecurityHeaderEnv): Plugin {
+  return {
+    name: 'trellis-security-headers',
+    apply: 'build',
+    transformIndexHtml() {
+      return [
+        {
+          tag: 'meta',
+          attrs: { 'http-equiv': 'Content-Security-Policy', content: buildCsp(env, false) },
+          injectTo: 'head-prepend',
+        },
+      ]
+    },
+    generateBundle() {
+      this.emitFile({ type: 'asset', fileName: '_headers', source: buildHeadersFile(env) })
+    },
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig(({ mode }) => {
   // Load environment variables including .env.test for test mode
@@ -30,7 +55,7 @@ export default defineConfig(({ mode }) => {
     // isn't a real file, so a hard refresh on a client-side route (e.g.
     // /agreement/123) resolves through React Router instead of 404ing.
     appType: 'spa',
-    plugins: [react()],
+    plugins: [react(), securityHeadersPlugin(env)],
     define: {
       // __APP_VERSION__ is declared as a global in src/vite-env.d.ts so
       // TypeScript knows the type without a window/globalThis cast.

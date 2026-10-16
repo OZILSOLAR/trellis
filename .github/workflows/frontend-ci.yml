@@ -82,6 +82,22 @@ jobs:
               || { echo "::error::${var} was not inlined into the build"; exit 1; }
           done
 
+      # #596: the build emits dist/_headers and a <meta> CSP. Fail if either
+      # is missing or the policy ever allows eval.
+      - name: Verify security headers and CSP
+        run: |
+          test -f dist/_headers || { echo "::error::dist/_headers was not emitted"; exit 1; }
+          for h in Content-Security-Policy X-Content-Type-Options Referrer-Policy; do
+            grep -q "$h:" dist/_headers || { echo "::error::$h missing from dist/_headers"; exit 1; }
+          done
+          grep -q "frame-ancestors 'none'" dist/_headers \
+            || { echo "::error::CSP is missing frame-ancestors 'none'"; exit 1; }
+          grep -q 'http-equiv="Content-Security-Policy"' dist/index.html \
+            || { echo "::error::index.html is missing the CSP meta tag"; exit 1; }
+          if grep -qi "unsafe-eval" dist/_headers dist/index.html; then
+            echo "::error::CSP must not contain 'unsafe-eval'"; exit 1
+          fi
+
       # Uploaded from a single Node version — the artifact is for inspecting a
       # failed build, not for release, so two copies add nothing.
       - name: Upload production build
