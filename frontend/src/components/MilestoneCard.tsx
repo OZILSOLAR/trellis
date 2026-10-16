@@ -1,5 +1,6 @@
 import type { Milestone, Agreement } from '../lib/soroban';
 import { getStatusBadgeColor, useMilestoneActions } from '../hooks/useMilestoneActions';
+import ProofLink from './ProofLink';
 
 interface WalletLike {
   connected: boolean;
@@ -45,14 +46,11 @@ export default function MilestoneCard({ milestone, agreement, wallet, onUpdate }
 
       <div className="mt-1">
         {milestone.proof_uri ? (
-          <a
-            href={milestone.proof_uri}
-            target="_blank"
-            rel="noopener noreferrer"
+          <ProofLink
+            uri={milestone.proof_uri}
+            label="View proof"
             className="text-cyan-400 hover:text-cyan-300 text-sm"
-          >
-            View proof
-          </a>
+          />
         ) : (
           <span className="text-gray-500 text-sm">No proof submitted</span>
         )}

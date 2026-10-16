@@ -1,6 +1,7 @@
 import { ExplorerLink } from './ExplorerLink'
 import MilestoneActions from './MilestoneActions'
 import CopyButton from './CopyButton'
+import ProofLink from './ProofLink'
 import type { Agreement } from '../lib/soroban'
 
 interface AgreementDetailProps {
@@ -92,14 +93,11 @@ export default function AgreementDetail({ agreement, onUpdate, totalAmount }: Ag
                   </td>
                   <td className="py-3 px-4">
                     {milestone.proof_uri ? (
-                      <a
-                        href={milestone.proof_uri}
-                        target="_blank"
-                        rel="noopener noreferrer"
+                      <ProofLink
+                        uri={milestone.proof_uri}
+                        label="View"
                         className="text-cyan-400 dark:text-cyan-400 light:text-cyan-600 hover:text-cyan-300 text-sm underline"
-                      >
-                        View
-                      </a>
+                      />
                     ) : (
                       <span className="text-gray-500 dark:text-gray-500 light:text-gray-600 text-sm">—</span>
                     )}
