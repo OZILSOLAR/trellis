@@ -3,7 +3,7 @@ import { nativeToScVal, scValToNative, xdr } from '@stellar/stellar-sdk'
 import { useContractRead } from './useContractRead'
 import { hexToBytes } from '../lib/format'
 import type { Agreement, RawAgreementResponse, RawMilestone } from '../lib/soroban'
-import { isValidAgreementResponse, parseEscrowStatus } from '../lib/soroban'
+import { isValidAgreementResponse, parseEscrowStatus, releasedAmountFor } from '../lib/soroban'
 
 const MAX_RETRIES = 3
 
@@ -94,6 +94,7 @@ export function useAgreement(agreementId: string | null) {
           amount: typeof m.amount === 'string' ? m.amount : (m.amount?.toString() || '0'),
           status: parseEscrowStatus(m.status),
           proof_uri: m.proof_uri || '',
+          released: releasedAmountFor(response.released_amounts, index),
         })),
       }
     } catch (err) {

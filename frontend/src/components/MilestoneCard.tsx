@@ -1,4 +1,5 @@
 import type { Milestone, Agreement } from '../lib/soroban';
+import MilestoneAmount from './MilestoneAmount';
 import { getStatusBadgeColor, useMilestoneActions } from '../hooks/useMilestoneActions';
 
 interface WalletLike {
@@ -41,7 +42,7 @@ export default function MilestoneCard({ milestone, agreement, wallet, onUpdate }
         </span>
       </div>
 
-      <p className="mt-2 text-lg font-semibold text-white">{milestone.amount}</p>
+      <MilestoneAmount milestone={milestone} className="mt-2 text-lg font-semibold text-white" />
 
       <div className="mt-1">
         {milestone.proof_uri ? (

@@ -1,4 +1,5 @@
 import type { Milestone, Agreement } from '../lib/soroban';
+import MilestoneAmount from './MilestoneAmount';
 import { getStatusBadgeColor, useMilestoneActions } from '../hooks/useMilestoneActions';
 
 interface WalletLike {
@@ -30,7 +31,9 @@ export default function MilestoneRow({ milestone, agreement, wallet }: Milestone
   return (
     <tr className="border-b border-navy-700 dark:border-navy-700 light:border-gray-200 hover:bg-navy-700/50 dark:hover:bg-navy-700/50 light:hover:bg-gray-100">
       <td className="py-3 px-4 text-white dark:text-white light:text-gray-900 font-mono text-sm">{milestone.id}</td>
-      <td className="py-3 px-4 text-white dark:text-white light:text-gray-900 text-sm">{milestone.amount}</td>
+      <td className="py-3 px-4 text-white dark:text-white light:text-gray-900 text-sm">
+        <MilestoneAmount milestone={milestone} />
+      </td>
       <td className="py-3 px-4">
         <span
           className={`${getStatusBadgeColor(

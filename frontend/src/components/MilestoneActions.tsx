@@ -5,7 +5,7 @@ import { useWallet } from '../context/WalletContext'
 import { useToastActions } from '../hooks/useToast'
 import TransactionStatus from './TransactionStatus'
 import { hexToBytes } from '../lib/format'
-import type { Agreement, Milestone } from '../lib/soroban'
+import { remainingAmount, type Agreement, type Milestone } from '../lib/soroban'
 
 interface MilestoneActionsProps {
   milestone: Milestone
@@ -46,6 +46,21 @@ export function validateSplit(payerAmount: string, payeeAmount: string, remainin
   return null
 }
 
+/**
+ * Validates a payer's partial release before it is signed. Mirrors
+ * `release_partial`: the amount must be a positive whole number (base units)
+ * no larger than what is still escrowed. Returns an error message or `null`.
+ */
+export function validatePartialRelease(amount: string, remaining: bigint): string | null {
+  const value = amount.trim()
+  if (!value) return 'Enter an amount to release.'
+  if (!BASE_UNIT_AMOUNT.test(value)) return 'Amount must be a positive whole number.'
+  const parsed = BigInt(value)
+  if (parsed <= 0n) return 'Amount must be greater than zero.'
+  if (parsed > remaining) return `Amount cannot exceed the remaining escrow (${remaining.toString()}).`
+  return null
+}
+
 const MAX_RETRIES = 3
 const BASE_FEE = 100_000
 
@@ -60,14 +75,19 @@ export default function MilestoneActions({ milestone, agreement, onSuccess }: Mi
   const [showSplitForm, setShowSplitForm] = useState(false)
   const [splitPayer, setSplitPayer] = useState('')
   const [splitPayee, setSplitPayee] = useState('')
+  const [showReleaseForm, setShowReleaseForm] = useState(false)
+  const [releaseAmount, setReleaseAmount] = useState('')
   const pendingAction = useRef<string | null>(null)
 
   const isLoading = status === 'building' || status === 'signing' || status === 'submitting'
   const isUserPayer = wallet.publicKey === agreement.payer
   const isUserPayee = wallet.publicKey === agreement.payee
   const isUserResolver = !!wallet.publicKey && wallet.publicKey === agreement.dispute_resolver
-  const remainingEscrow = BigInt(milestone.amount || '0')
+  // What is still escrowed after any release_partial payouts — rulings and
+  // approvals only ever move this remainder.
+  const remainingEscrow = remainingAmount(milestone)
   const splitError = validateSplit(splitPayer, splitPayee, remainingEscrow)
+  const releaseError = validatePartialRelease(releaseAmount, remainingEscrow)
 
   // lock_funds, submit_work and approve_and_release take no caller argument —
   // the contract derives the signer from agreement.payer / agreement.payee via
@@ -165,6 +185,33 @@ export default function MilestoneActions({ milestone, agreement, onSuccess }: Mi
     }
   }
 
+  // release_partial takes no caller argument — the contract requires the
+  // payer's auth.
+  const handleReleasePartial = async (fee?: string) => {
+    if (!wallet.publicKey) return
+    // Never ask the wallet to sign a release the contract would reject.
+    if (releaseError) return
+
+    pendingAction.current = 'release_partial'
+    try {
+      const idBytes = hexToBytes(agreement.agreement_id)
+      const args = [
+        nativeToScVal(idBytes, { type: 'bytes' }),
+        nativeToScVal(milestone.id, { type: 'u32' }),
+        nativeToScVal(BigInt(releaseAmount.trim()), { type: 'i128' }),
+      ]
+
+      await invoke('release_partial', args, wallet.publicKey, fee)
+      toast.success({ title: 'Partial release sent to payee' })
+      setShowReleaseForm(false)
+      setReleaseAmount('')
+      pendingAction.current = null
+      onSuccess?.()
+    } catch (err) {
+      toast.error({ title: 'Partial release failed', message: err instanceof Error ? err.message : 'Unknown error' })
+    }
+  }
+
   // resolve_dispute and resolve_dispute_split take no caller argument — the
   // contract gates both on agreement.dispute_resolver.require_auth().
   const handleResolveDispute = async (refundToPayer: boolean, fee?: string) => {
@@ -225,6 +272,7 @@ export default function MilestoneActions({ milestone, agreement, onSuccess }: Mi
       else if (pendingAction.current === 'submit_work') await handleSubmitWork()
       else if (pendingAction.current === 'approve_and_release') await handleApproveRelease()
       else if (pendingAction.current === 'raise_dispute') await handleRaiseDispute()
+      else if (pendingAction.current === 'release_partial') await handleReleasePartial()
       else if (pendingAction.current === 'resolve_dispute_refund') await handleResolveDispute(true)
       else if (pendingAction.current === 'resolve_dispute_pay') await handleResolveDispute(false)
       else if (pendingAction.current === 'resolve_dispute_split') await handleResolveSplit()
@@ -263,6 +311,15 @@ export default function MilestoneActions({ milestone, agreement, onSuccess }: Mi
   }
 
   const isDisputable = milestone.status === 'Funded' || milestone.status === 'WorkSubmitted'
+
+  // release_partial is payer-only and needs funds still in escrow.
+  if (isDisputable && isUserPayer && remainingEscrow > 0n) {
+    actions.push({
+      label: 'Release Part',
+      action: () => setShowReleaseForm(true),
+      color: 'bg-teal-500 hover:bg-teal-400',
+    })
+  }
   // raise_dispute rejects any caller other than the payer or payee.
   const isUserParty = isUserPayer || isUserPayee
 
@@ -364,6 +421,47 @@ export default function MilestoneActions({ milestone, agreement, onSuccess }: Mi
         </div>
       )}
 
+      {/* Payer partial-release form */}
+      {showReleaseForm && (
+        <div className="space-y-2 p-3 bg-navy-700 dark:bg-navy-700 light:bg-gray-100 rounded">
+          <p className="text-xs text-gray-300 dark:text-gray-300 light:text-gray-700">
+            Release part of the remaining <span className="font-mono">{remainingEscrow.toString()}</span> to the payee.
+            Partial releases are final.
+          </p>
+          <input
+            type="text"
+            inputMode="numeric"
+            placeholder="Amount to release"
+            aria-label="Amount to release"
+            value={releaseAmount}
+            onChange={(e) => setReleaseAmount(e.target.value)}
+            className="w-full px-3 py-2 bg-navy-800 dark:bg-navy-800 light:bg-white border border-navy-600 dark:border-navy-600 light:border-gray-300 text-white dark:text-white light:text-gray-900 text-sm rounded focus:outline-none focus:border-cyan-400"
+          />
+          {releaseAmount && releaseError && (
+            <p className="text-red-400 text-xs" role="alert">{releaseError}</p>
+          )}
+          <div className="flex gap-2">
+            <button
+              onClick={() => handleReleasePartial()}
+              disabled={isLoading || !!releaseError}
+              className="px-3 py-1 bg-teal-500 hover:bg-teal-400 text-white dark:text-white light:text-gray-900 text-xs rounded disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isLoading ? 'Processing...' : 'Release'}
+            </button>
+            <button
+              onClick={() => {
+                setShowReleaseForm(false)
+                setReleaseAmount('')
+              }}
+              disabled={isLoading}
+              className="px-3 py-1 bg-navy-600 dark:bg-navy-600 light:bg-gray-200 hover:bg-navy-500 dark:hover:bg-navy-500 light:hover:bg-gray-300 text-white dark:text-white light:text-gray-900 text-xs rounded disabled:opacity-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Resolver split form */}
       {showSplitForm && (
         <div className="space-y-2 p-3 bg-navy-700 dark:bg-navy-700 light:bg-gray-100 rounded">
@@ -427,7 +525,7 @@ export default function MilestoneActions({ milestone, agreement, onSuccess }: Mi
         <div className="p-3 bg-navy-700 dark:bg-navy-700 light:bg-gray-100 rounded border border-yellow-500/50">
           <p className="text-sm text-gray-300 dark:text-gray-300 light:text-gray-700 mb-2">
             {showConfirm === 'lock' && `Lock ${milestone.amount} tokens for milestone ${milestone.id}?`}
-            {showConfirm === 'approve' && `Approve and release ${milestone.amount} tokens to payee?`}
+            {showConfirm === 'approve' && `Approve and release ${remainingEscrow.toString()} tokens to payee?`}
             {showConfirm === 'dispute' && 'Raise a dispute for this milestone?'}
             {showConfirm === 'resolve_refund' && `Refund the remaining ${remainingEscrow.toString()} tokens to the payer?`}
             {showConfirm === 'resolve_pay' && `Release the remaining ${remainingEscrow.toString()} tokens to the payee?`}
