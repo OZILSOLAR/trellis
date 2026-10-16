@@ -1,10 +1,12 @@
 name: Advanced Testing
 
 on:
+  # `master` is the default branch; without it here the suites below only ran
+  # on the weekly cron and never on PRs.
   push:
-    branches: [main, develop]
+    branches: [master, main, develop]
   pull_request:
-    branches: [main, develop]
+    branches: [master, main, develop]
   schedule:
     # Run mutation tests weekly on Sundays at 00:00 UTC
     - cron: '0 0 * * 0'
@@ -33,6 +35,11 @@ jobs:
   property-tests:
     name: Property-Based Tests
     runs-on: ubuntu-latest
+    env:
+      # An explicit manual input wins; otherwise PRs run a lighter 1024 cases
+      # to keep feedback fast, while pushes and the weekly cron keep the full
+      # 8192. Mutation tests stay schedule/manual-only below.
+      PROPTEST_CASES: ${{ inputs.proptest_cases || (github.event_name == 'pull_request' && '1024') || '8192' }}
     steps:
       - uses: actions/checkout@v4
       
@@ -41,9 +48,9 @@ jobs:
         with:
           toolchain: stable
       
-      - name: Run property tests (${{ inputs.proptest_cases || 8192 }} cases)
+      - name: Run property tests (${{ env.PROPTEST_CASES }} cases)
         working-directory: contracts/trellis_core
-        run: PROPTEST_CASES=${{ inputs.proptest_cases || 8192 }} cargo test test_properties
+        run: cargo test test_properties
         env:
           RUST_LOG: debug
 
