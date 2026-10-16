@@ -331,6 +331,34 @@ pub enum Commands {
         yes: bool,
     },
 
+    /// Set or read a milestone's optional deadline.
+    #[command(subcommand)]
+    Deadline(DeadlineSubcommand),
+
+    /// Close a stalled milestone whose deadline has passed.
+    ///
+    /// Permissionless: a `Pending` milestone becomes `Refunded`; a `Funded`
+    /// one becomes `Refunded` and its locked amount returns to the payer.
+    /// `WorkSubmitted` and `Disputed` milestones are never expired.
+    Expire {
+        /// Agreement ID (hex-encoded, 64 chars).
+        #[arg(long)]
+        agreement_id: String,
+
+        /// Zero-based index of the milestone to expire.
+        #[arg(long)]
+        milestone_id: u32,
+
+        /// Address that authorises the call and is recorded in the
+        /// `milestone_expired` event — normally the signing source key.
+        #[arg(long)]
+        caller: String,
+
+        /// Skip the confirmation prompt (for scripting).
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
+
     /// Query the current state of an agreement.
     Status {
         /// Agreement ID (hex-encoded, 64 chars).
@@ -398,6 +426,40 @@ pub enum Commands {
         /// Delete the history file instead of listing it.
         #[arg(long, conflicts_with = "limit")]
         clear: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum DeadlineSubcommand {
+    /// Set a deadline on a still-`Pending` milestone (payer only).
+    Set {
+        /// Agreement ID (hex-encoded, 64 chars).
+        #[arg(long)]
+        agreement_id: String,
+
+        /// Zero-based index of the milestone.
+        #[arg(long)]
+        milestone_id: u32,
+
+        /// Deadline as Unix seconds (e.g. `1767225600`) or an RFC 3339
+        /// timestamp (e.g. `2026-01-01T00:00:00Z`). Must be in the future.
+        #[arg(long, value_parser = parse_deadline)]
+        deadline: u64,
+
+        /// Skip the confirmation prompt (for scripting).
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
+
+    /// Read a milestone's deadline (Unix seconds, or `null` if none is set).
+    Get {
+        /// Agreement ID (hex-encoded, 64 chars).
+        #[arg(long)]
+        agreement_id: String,
+
+        /// Zero-based index of the milestone.
+        #[arg(long)]
+        milestone_id: u32,
     },
 }
 
@@ -538,6 +600,25 @@ pub fn dispatch(cmd: Commands, config: &Config, opts: &OutputOpts) -> Result<(),
             caller,
             yes,
         } => run_extend_ttl(config, agreement_id, caller, yes, opts),
+
+        Commands::Deadline(DeadlineSubcommand::Set {
+            agreement_id,
+            milestone_id,
+            deadline,
+            yes,
+        }) => run_deadline_set(config, agreement_id, milestone_id, deadline, yes, opts),
+
+        Commands::Deadline(DeadlineSubcommand::Get {
+            agreement_id,
+            milestone_id,
+        }) => run_deadline_get(config, agreement_id, milestone_id, opts),
+
+        Commands::Expire {
+            agreement_id,
+            milestone_id,
+            caller,
+            yes,
+        } => run_expire(config, agreement_id, milestone_id, caller, yes, opts),
 
         Commands::Status { agreement_id } => run_status(config, agreement_id, opts),
 
@@ -1084,6 +1165,267 @@ fn build_extend_ttl_args(agreement_id: String, caller: String) -> Vec<String> {
         agreement_id,
         "--caller".to_string(),
         caller,
+    ]
+}
+
+// ---------------------------------------------------------------------------
+// Milestone deadlines (#594)
+// ---------------------------------------------------------------------------
+
+/// Parse a deadline given as Unix seconds or as an RFC 3339 timestamp.
+///
+/// Both forms resolve to the same `u64` the contract stores, so
+/// `1767225600` and `2026-01-01T00:00:00Z` are interchangeable. Fractional
+/// seconds are truncated (the ledger clock has one-second resolution). A
+/// timestamp before the Unix epoch is rejected since it cannot be a `u64`.
+pub fn parse_deadline(input: &str) -> Result<u64, String> {
+    let s = input.trim();
+    if s.is_empty() {
+        return Err("deadline must not be empty".to_string());
+    }
+    if s.bytes().all(|b| b.is_ascii_digit()) {
+        return s
+            .parse::<u64>()
+            .map_err(|_| format!("deadline `{s}` does not fit in a u64"));
+    }
+    parse_rfc3339(s).ok_or_else(|| {
+        format!(
+            "invalid deadline `{s}`: expected Unix seconds (e.g. 1767225600) or an \
+             RFC 3339 timestamp (e.g. 2026-01-01T00:00:00Z)"
+        )
+    })
+}
+
+/// Minimal RFC 3339 parser: `YYYY-MM-DD(T|t| )HH:MM:SS[.frac](Z|z|±HH:MM)`.
+///
+/// Returns `None` for any malformed or out-of-range field, or for an instant
+/// before 1970-01-01T00:00:00Z.
+fn parse_rfc3339(s: &str) -> Option<u64> {
+    let b = s.as_bytes();
+    if b.len() < 20 {
+        return None;
+    }
+    let num = |range: std::ops::Range<usize>| -> Option<i64> {
+        let part = s.get(range)?;
+        if part.bytes().all(|c| c.is_ascii_digit()) {
+            part.parse().ok()
+        } else {
+            None
+        }
+    };
+
+    if b[4] != b'-' || b[7] != b'-' || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    if !matches!(b[10], b'T' | b't' | b' ') {
+        return None;
+    }
+
+    let year = num(0..4)?;
+    let month = num(5..7)?;
+    let day = num(8..10)?;
+    let hour = num(11..13)?;
+    let minute = num(14..16)?;
+    let second = num(17..19)?;
+
+    // Skip optional fractional seconds.
+    let mut i = 19;
+    if b[i] == b'.' {
+        i += 1;
+        let start = i;
+        while i < b.len() && b[i].is_ascii_digit() {
+            i += 1;
+        }
+        if i == start {
+            return None;
+        }
+    }
+
+    let offset_secs = match b.get(i)? {
+        b'Z' | b'z' if i + 1 == b.len() => 0,
+        sign @ (b'+' | b'-') if i + 6 == b.len() && b[i + 3] == b':' => {
+            let oh = num(i + 1..i + 3)?;
+            let om = num(i + 4..i + 6)?;
+            if oh > 23 || om > 59 {
+                return None;
+            }
+            let off = oh * 3600 + om * 60;
+            if *sign == b'+' {
+                off
+            } else {
+                -off
+            }
+        }
+        _ => return None,
+    };
+
+    let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+    let days_in_month = match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 if leap => 29,
+        2 => 28,
+        _ => return None,
+    };
+    // RFC 3339 allows second = 60 for leap seconds; Unix time folds it into
+    // the next second, which the arithmetic below does naturally.
+    if day < 1 || day > days_in_month || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+
+    let total = days_from_civil(year, month, day) * 86_400
+        + hour * 3600
+        + minute * 60
+        + second
+        - offset_secs;
+    u64::try_from(total).ok()
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's
+/// `days_from_civil`).
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = (month + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Reject a deadline that is not strictly after `now` (Unix seconds),
+/// mirroring the contract's `DeadlineInPast` check so a doomed transaction is
+/// never submitted.
+fn check_deadline_in_future(deadline: u64, now: u64) -> Result<(), String> {
+    if deadline <= now {
+        return Err(format!(
+            "deadline {deadline} is not in the future (current time is {now}); \
+             the contract would reject it with DeadlineInPast"
+        ));
+    }
+    Ok(())
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// `stellar contract invoke … -- set_milestone_deadline …`
+///
+/// Final call signature:
+/// ```
+/// stellar contract invoke … -- set_milestone_deadline
+///   --agreement-id <hex> --milestone-id <u32> --deadline <u64>
+/// ```
+///
+/// Must be signed by the payer while the milestone is still `Pending`.
+fn run_deadline_set(
+    config: &Config,
+    agreement_id: String,
+    milestone_id: u32,
+    deadline: u64,
+    yes: bool,
+    opts: &OutputOpts,
+) -> Result<(), String> {
+    validate_agreement_id(&agreement_id).unwrap_or_else(|e| fail_validation(&e));
+    check_deadline_in_future(deadline, unix_now()).unwrap_or_else(|e| fail_validation(&e));
+
+    confirm_action(
+        &format!(
+            "This will set the deadline of milestone {milestone_id} of agreement \
+             {agreement_id} to {deadline} (Unix seconds)."
+        ),
+        yes,
+        opts,
+    )?;
+
+    execute(
+        config,
+        "set_milestone_deadline",
+        &build_deadline_set_args(agreement_id, milestone_id, deadline),
+        opts,
+    )
+}
+
+fn build_deadline_set_args(agreement_id: String, milestone_id: u32, deadline: u64) -> Vec<String> {
+    vec![
+        "--agreement-id".to_string(),
+        agreement_id,
+        "--milestone-id".to_string(),
+        milestone_id.to_string(),
+        "--deadline".to_string(),
+        deadline.to_string(),
+    ]
+}
+
+/// `stellar contract invoke … -- get_milestone_deadline …`
+///
+/// Read-only view returning `Option<u64>`: the deadline in Unix seconds, or
+/// `null` when none is set.
+fn run_deadline_get(
+    config: &Config,
+    agreement_id: String,
+    milestone_id: u32,
+    opts: &OutputOpts,
+) -> Result<(), String> {
+    validate_agreement_id(&agreement_id).unwrap_or_else(|e| fail_validation(&e));
+
+    let args = vec![
+        "--agreement-id".to_string(),
+        agreement_id,
+        "--milestone-id".to_string(),
+        milestone_id.to_string(),
+    ];
+
+    execute(config, "get_milestone_deadline", &args, opts)
+}
+
+/// `stellar contract invoke … -- expire_milestone …`
+///
+/// Final call signature:
+/// ```
+/// stellar contract invoke … -- expire_milestone
+///   --caller <G|C> --agreement-id <hex> --milestone-id <u32>
+/// ```
+fn run_expire(
+    config: &Config,
+    agreement_id: String,
+    milestone_id: u32,
+    caller: String,
+    yes: bool,
+    opts: &OutputOpts,
+) -> Result<(), String> {
+    validate_agreement_id(&agreement_id).unwrap_or_else(|e| fail_validation(&e));
+    validate_address("caller", &caller).unwrap_or_else(|e| fail_validation(&e));
+
+    confirm_action(
+        &format!(
+            "This will expire milestone {milestone_id} of agreement {agreement_id}; \
+             any locked funds are refunded to the payer."
+        ),
+        yes,
+        opts,
+    )?;
+
+    execute(
+        config,
+        "expire_milestone",
+        &build_expire_args(agreement_id, milestone_id, caller),
+        opts,
+    )
+}
+
+fn build_expire_args(agreement_id: String, milestone_id: u32, caller: String) -> Vec<String> {
+    vec![
+        "--caller".to_string(),
+        caller,
+        "--agreement-id".to_string(),
+        agreement_id,
+        "--milestone-id".to_string(),
+        milestone_id.to_string(),
     ]
 }
 
@@ -3348,5 +3690,146 @@ mod tests {
         };
         let result = execute(&config, "init", &[], &opts);
         assert!(result.is_ok(), "execute dry-run --json must return Ok, got: {result:?}");
+    }
+
+    // --- Milestone deadline / expire commands (#594) ---
+
+    #[test]
+    fn deadline_unix_and_rfc3339_parse_to_same_value() {
+        assert_eq!(parse_deadline("1767225600"), Ok(1_767_225_600));
+        assert_eq!(parse_deadline("2026-01-01T00:00:00Z"), Ok(1_767_225_600));
+        assert_eq!(parse_deadline("2026-01-01t00:00:00z"), Ok(1_767_225_600));
+        assert_eq!(parse_deadline("2026-01-01 00:00:00Z"), Ok(1_767_225_600));
+        assert_eq!(parse_deadline("2026-01-01T02:30:00+02:30"), Ok(1_767_225_600));
+        assert_eq!(parse_deadline("2025-12-31T19:00:00-05:00"), Ok(1_767_225_600));
+        assert_eq!(parse_deadline("2026-01-01T00:00:00.999Z"), Ok(1_767_225_600));
+        assert_eq!(parse_deadline("1970-01-01T00:00:00Z"), Ok(0));
+        assert_eq!(parse_deadline("2024-02-29T12:00:00Z"), Ok(1_709_208_000));
+    }
+
+    #[test]
+    fn deadline_rejects_malformed_input() {
+        for bad in [
+            "",
+            "   ",
+            "-5",
+            "1.5",
+            "tomorrow",
+            "2026-01-01",
+            "2026-01-01T00:00:00",
+            "2026-13-01T00:00:00Z",
+            "2026-02-29T00:00:00Z",
+            "2026-01-32T00:00:00Z",
+            "2026-01-01T24:00:00Z",
+            "2026-01-01T00:00:00+24:00",
+            "2026-01-01T00:00:00.Z",
+            "2026-01-01T00:00:00Zjunk",
+            "1969-12-31T23:59:59Z",
+            "99999999999999999999999",
+        ] {
+            assert!(parse_deadline(bad).is_err(), "should reject {bad:?}");
+        }
+    }
+
+    #[test]
+    fn deadline_in_past_or_now_is_rejected_client_side() {
+        assert!(check_deadline_in_future(100, 100).is_err());
+        assert!(check_deadline_in_future(99, 100).is_err());
+        assert!(check_deadline_in_future(101, 100).is_ok());
+    }
+
+    #[test]
+    fn deadline_and_expire_commands_parse() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct TestCli {
+            #[command(subcommand)]
+            command: Commands,
+        }
+
+        let id = "d".repeat(64);
+        let caller = format!("G{}", "A".repeat(55));
+
+        let unix = TestCli::try_parse_from([
+            "trellis", "deadline", "set", "--agreement-id", &id, "--milestone-id", "1",
+            "--deadline", "1767225600", "--yes",
+        ])
+        .unwrap();
+        let rfc = TestCli::try_parse_from([
+            "trellis", "deadline", "set", "--agreement-id", &id, "--milestone-id", "1",
+            "--deadline", "2026-01-01T00:00:00Z",
+        ])
+        .unwrap();
+        for cli in [unix, rfc] {
+            match cli.command {
+                Commands::Deadline(DeadlineSubcommand::Set { deadline, milestone_id, .. }) => {
+                    assert_eq!(deadline, 1_767_225_600);
+                    assert_eq!(milestone_id, 1);
+                }
+                other => panic!("parsed into the wrong command: {other:?}"),
+            }
+        }
+
+        assert!(TestCli::try_parse_from([
+            "trellis", "deadline", "set", "--agreement-id", &id, "--milestone-id", "1",
+            "--deadline", "next week",
+        ])
+        .is_err());
+
+        let get = TestCli::try_parse_from([
+            "trellis", "deadline", "get", "--agreement-id", &id, "--milestone-id", "2",
+        ])
+        .unwrap();
+        assert!(matches!(
+            get.command,
+            Commands::Deadline(DeadlineSubcommand::Get { milestone_id: 2, .. })
+        ));
+
+        let expire = TestCli::try_parse_from([
+            "trellis", "expire", "--agreement-id", &id, "--milestone-id", "0", "--caller", &caller,
+        ])
+        .unwrap();
+        match expire.command {
+            Commands::Expire { caller: c, milestone_id: 0, yes: false, .. } => assert_eq!(c, caller),
+            other => panic!("parsed into the wrong command: {other:?}"),
+        }
+
+        // --caller is required for expire.
+        assert!(TestCli::try_parse_from([
+            "trellis", "expire", "--agreement-id", &id, "--milestone-id", "0",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn deadline_and_expire_args_match_contract_signatures() {
+        let id = "e".repeat(64);
+        assert_eq!(
+            build_deadline_set_args(id.clone(), 3, 1_767_225_600),
+            vec!["--agreement-id", &id, "--milestone-id", "3", "--deadline", "1767225600"]
+        );
+        let caller = format!("G{}", "A".repeat(55));
+        assert_eq!(
+            build_expire_args(id.clone(), 3, caller.clone()),
+            vec!["--caller", &caller, "--agreement-id", &id, "--milestone-id", "3"]
+        );
+    }
+
+    #[test]
+    fn deadline_and_expire_json_envelopes_are_valid() {
+        // set / expire return `()` (printed as empty / `null`), get returns
+        // `Option<u64>` (a number or `null`). Every case must round-trip
+        // through a JSON parser.
+        for stdout in ["", "null", "1767225600"] {
+            let env = json_envelope(&ok_output(stdout));
+            let text = serde_json::to_string(&env).unwrap();
+            let parsed: serde_json::Value = serde_json::from_str(&text).unwrap();
+            assert_eq!(parsed["status"], "success");
+        }
+        let env = json_envelope(&ok_output("1767225600"));
+        assert_eq!(env["result"], serde_json::json!(1_767_225_600u64));
+        let env = json_envelope(&ok_output("null"));
+        assert!(env["result"].is_null());
     }
 }

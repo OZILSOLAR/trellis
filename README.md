@@ -685,9 +685,16 @@ trellis lock-funds --agreement-id <hex-id> --milestone-id 0
 
 # Fund several milestones atomically in one transaction
 trellis batch-lock-funds --agreement-id <hex-id> --milestone-ids "0,1,2"
+
+# Set a milestone deadline (Unix seconds or RFC 3339; must be in the future)
+trellis deadline set --agreement-id <hex-id> --milestone-id 0 --deadline 2026-01-01T00:00:00Z
+trellis deadline get --agreement-id <hex-id> --milestone-id 0
+
+# Close a stalled milestone once its deadline has passed
+trellis expire --agreement-id <hex-id> --milestone-id 0 --caller <your-address>
 ```
 
-All **11 CLI commands** are implemented — `init`, `lock-funds`, `batch-lock-funds`, `submit-work`, `approve-release`, `raise-dispute`, `resolve-dispute`, `cancel-milestone`, `extend-ttl`, `status`, and `total-amount`. See [DEPLOYMENT.md](./DEPLOYMENT.md) for the full command reference.
+All **11 CLI commands** are implemented — `init`, `lock-funds`, `batch-lock-funds`, `submit-work`, `approve-release`, `raise-dispute`, `resolve-dispute`, `cancel-milestone`, `extend-ttl`, `deadline set|get`, `expire`, `status`, and `total-amount`. See [DEPLOYMENT.md](./DEPLOYMENT.md) for the full command reference.
 All **9 escrow commands** are implemented — `init`, `lock-funds`, `submit-work`, `approve-release`, `raise-dispute`, `resolve-dispute`, `cancel-milestone`, `status`, and `milestone-status`. The CLI also provides two utility commands: `completion` (see [Shell Completions](#shell-completions)) and `keys` (manage secret keys in the OS keychain). See [DEPLOYMENT.md](./DEPLOYMENT.md) for the full command reference.
 
 `trellis health` checks the configured RPC endpoint natively (`getHealth` + `getLatestLedger` over HTTP). It needs only an RPC URL, with no `stellar` binary, contract ID or source key, and it supports `--json` / `--human-readable` / `--quiet` / `--dry-run`.
