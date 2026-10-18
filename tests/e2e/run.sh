@@ -78,6 +78,7 @@ PAYER=$(stellar keys address payer)
 PAYEE=$(stellar keys address payee)
 RESOLVER=$(stellar keys address resolver)
 PAYER_SECRET=$(stellar keys show payer)
+PAYEE_SECRET=$(stellar keys show payee)
 
 log "building trellis_core contract (wasm32)..."
 cargo rustc --manifest-path "$REPO_ROOT/contracts/trellis_core/Cargo.toml" \
@@ -146,6 +147,7 @@ E2E_BASE_URL="http://localhost:$DEV_SERVER_PORT" \
 E2E_PAYER_ADDRESS="$PAYER" \
 E2E_PAYER_SECRET="$PAYER_SECRET" \
 E2E_PAYEE_ADDRESS="$PAYEE" \
+E2E_PAYEE_SECRET="$PAYEE_SECRET" \
 E2E_RESOLVER_ADDRESS="$RESOLVER" \
 E2E_TOKEN_ADDRESS="$TOKEN" \
 E2E_RPC_URL="$RPC_URL" \

@@ -37,21 +37,86 @@ function getEnv(name: keyof typeof DEV_FALLBACKS): string {
   )
 }
 
-// Cached values — validated once per session, not on every call.
-let _contractId: string | undefined
-let _rpcUrl: string | undefined
-let _networkPassphrase: string | undefined
+export type NetworkId = 'testnet' | 'mainnet' | 'futurenet' | 'custom'
+
+export const NETWORK_IDS: NetworkId[] = ['testnet', 'mainnet', 'futurenet', 'custom']
+
+/**
+ * Presets mirroring the CLI's `--network` flag (cli/trellis_cli/src/config.rs).
+ * `custom` has no preset: it uses the build-time VITE_* values.
+ */
+const PRESETS: Record<Exclude<NetworkId, 'custom'>, { rpcUrl: string; passphrase: string }> = {
+  testnet: {
+    rpcUrl: 'https://soroban-testnet.stellar.org',
+    passphrase: 'Test SDF Network ; September 2015',
+  },
+  mainnet: {
+    rpcUrl: 'https://mainnet.sorobanrpc.com',
+    passphrase: 'Public Global Stellar Network ; September 2015',
+  },
+  futurenet: {
+    rpcUrl: 'https://rpc-futurenet.stellar.org',
+    passphrase: 'Test SDF Future Network ; October 2022',
+  },
+}
+
+const STORAGE_KEY = 'trellis.network'
+
+function isNetworkId(value: unknown): value is NetworkId {
+  return typeof value === 'string' && (NETWORK_IDS as string[]).includes(value)
+}
+
+/** The network the user picked in the UI, or null to use build-time env values. */
+export function getSelectedNetwork(): NetworkId | null {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY)
+    return isNetworkId(stored) ? stored : null
+  } catch {
+    return null
+  }
+}
+
+/** Persists the choice. Consumers read config at import time, so callers should reload. */
+export function setSelectedNetwork(network: NetworkId): void {
+  try {
+    localStorage.setItem(STORAGE_KEY, network)
+  } catch {
+    // Storage unavailable (private mode): the selection just won't persist.
+  }
+}
+
+/** Network currently in effect, inferred from the build-time passphrase when nothing is selected. */
+export function getActiveNetwork(): NetworkId {
+  const selected = getSelectedNetwork()
+  if (selected) return selected
+  const passphrase = getEnv('VITE_NETWORK_PASSPHRASE')
+  const match = (Object.keys(PRESETS) as Array<keyof typeof PRESETS>).find(
+    (id) => PRESETS[id].passphrase === passphrase,
+  )
+  return match ?? 'custom'
+}
+
+function preset(): (typeof PRESETS)[keyof typeof PRESETS] | null {
+  const selected = getSelectedNetwork()
+  return selected && selected !== 'custom' ? PRESETS[selected] : null
+}
 
 export function getContractId(): string {
-  return (_contractId ??= getEnv('VITE_CONTRACT_ID'))
+  // A non-default preset may have its own deployment: VITE_CONTRACT_ID_MAINNET etc.
+  const selected = getSelectedNetwork()
+  if (selected && selected !== 'custom') {
+    const perNetwork = import.meta.env[`VITE_CONTRACT_ID_${selected.toUpperCase()}`]
+    if (typeof perNetwork === 'string' && perNetwork) return perNetwork
+  }
+  return getEnv('VITE_CONTRACT_ID')
 }
 
 export function getRpcUrl(): string {
-  return (_rpcUrl ??= getEnv('VITE_RPC_URL'))
+  return preset()?.rpcUrl ?? getEnv('VITE_RPC_URL')
 }
 
 export function getNetworkPassphrase(): string {
-  return (_networkPassphrase ??= getEnv('VITE_NETWORK_PASSPHRASE'))
+  return preset()?.passphrase ?? getEnv('VITE_NETWORK_PASSPHRASE')
 }
 
 /**

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import { useTheme } from '../context/ThemeContext'
-import { CONTRACT_ID } from '../lib/config'
+import { CONTRACT_ID, NETWORK_IDS, getActiveNetwork, setSelectedNetwork, type NetworkId } from '../lib/config'
 import { ExplorerLink } from './ExplorerLink'
 import { NetworkStatus } from './NetworkStatus'
 import WalletConnect from './WalletConnect'
@@ -59,6 +59,22 @@ function Navbar() {
 
       <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-4">
         <NetworkStatus />
+        <select
+          aria-label="Network"
+          value={getActiveNetwork()}
+          onChange={(e) => {
+            setSelectedNetwork(e.target.value as NetworkId)
+            // Config is resolved at import time, so reload to apply it everywhere.
+            window.location.reload()
+          }}
+          className="px-2 py-1 text-xs rounded border border-navy-700 dark:border-navy-700 light:border-gray-300 bg-navy-800 dark:bg-navy-800 light:bg-white text-gray-300 dark:text-gray-300 light:text-gray-700"
+        >
+          {NETWORK_IDS.map((id) => (
+            <option key={id} value={id}>
+              {id}
+            </option>
+          ))}
+        </select>
         <ExplorerLink
           type="contract"
           value={CONTRACT_ID}

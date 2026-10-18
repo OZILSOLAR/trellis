@@ -154,4 +154,13 @@ pub enum TrellisError {
     ///
     /// Appended as discriminant `18` per the stability rule above.
     InvalidReleaseAmount = 18,
+
+    /// A token transfer into the contract credited less than the requested
+    /// amount (e.g. a fee-on-transfer token).
+    ///
+    /// Crediting the full amount anyway would leave the pooled balance short
+    /// and let later payouts drain other agreements' funds.
+    ///
+    /// Appended as discriminant `19` per the stability rule above.
+    TransferShortfall = 19,
 }

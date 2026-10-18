@@ -1,0 +1,47 @@
+# One-command local stack (#502): `docker compose up`
+#   stellar   - local Stellar/Soroban node (RPC on :8000)
+#   deployer  - builds + deploys trellis_core, writes frontend/.env.local
+#   frontend  - Vite dev server on http://localhost:5173
+# CLI: `cargo run -p trellis_cli -- --network custom --rpc-url http://localhost:8000/soroban/rpc ...`
+services:
+  stellar:
+    image: stellar/quickstart:latest
+    command: ["--local", "--enable", "rpc"]
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/soroban/rpc -X POST -H 'Content-Type: application/json' -d '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"getHealth\"}' | grep -q healthy"]
+      interval: 5s
+      retries: 60
+
+  deployer:
+    image: rust:1.86
+    working_dir: /workspace
+    volumes:
+      - .:/workspace
+      - cargo-cache:/usr/local/cargo/registry
+    depends_on:
+      stellar:
+        condition: service_healthy
+    command:
+      - bash
+      - -c
+      - |
+        rustup target add wasm32-unknown-unknown &&
+        curl -fsSL https://github.com/stellar/stellar-cli/releases/download/v27.1.0/stellar-cli-27.1.0-x86_64-unknown-linux-gnu.tar.gz | tar -xz -C /usr/local/bin stellar &&
+        bash scripts/dev-deploy.sh
+
+  frontend:
+    image: node:22
+    working_dir: /workspace/frontend
+    volumes:
+      - .:/workspace
+    ports:
+      - "5173:5173"
+    depends_on:
+      deployer:
+        condition: service_completed_successfully
+    command: bash -c "npm ci && npm run dev -- --host 0.0.0.0"
+
+volumes:
+  cargo-cache:

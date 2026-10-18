@@ -272,7 +272,9 @@ pub fn agreement_completed(
 /// Emitted when a keeper extends the TTL of an agreement to prevent expiry.
 ///
 /// No state is modified beyond the ledger TTL. This event creates an audit
-/// trail for off-chain monitoring of keeper activity.
+/// trail for off-chain monitoring of keeper activity. `caller` has authorised
+/// the invocation (`extend_agreement_ttl` calls `caller.require_auth()`), so
+/// it is always the real signer and cannot be forged.
 ///
 /// Topics: `("trls_ttle", agreement_id)`
 /// Data:   `(caller)`
@@ -302,8 +304,9 @@ pub fn deadline_set(env: &Env, agreement_id: BytesN<32>, milestone_id: u32, dead
 /// Data:   `(milestone_id, refunded_amount, caller)`
 ///
 /// `refunded_amount` is `0` when the milestone expired while still `Pending`
-/// (nothing was ever escrowed), and the milestone amount when it expired
-/// while `Funded` (the locked funds went back to the payer). `caller` is
+/// (nothing was ever escrowed; it is now `Cancelled`), and the milestone
+/// amount when it expired while `Funded` (the locked funds went back to the
+/// payer; it is now `Refunded`). `caller` is
 /// whoever triggered the expiry — the entrypoint is permissionless, so this
 /// may be a keeper rather than either party.
 pub fn milestone_expired(

@@ -11,6 +11,10 @@ contracts/trellis_core/.env
 *.swo
 *~
 
+# Claude Code settings — per-user tool permissions must never be committed,
+# otherwise they auto-approve Bash/Write/Edit/WebFetch for anyone reviewing a PR.
+.claude/
+
 # Frontend build output — never commit generated artifacts.
 frontend/dist/
 
@@ -24,3 +28,8 @@ frontend/.env.*.local
 # Cargo.lock is tracked for the CLI binary crate to ensure reproducible builds.
 # Unlike libraries, binary crates should commit their lockfile so that every
 # developer and CI runner resolves identical dependency versions.
+
+# cargo-mutants output
+mutants.out/
+mutants.out.old/
+mutants-out/

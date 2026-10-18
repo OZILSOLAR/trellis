@@ -1,0 +1,39 @@
+name: Deploy Mainnet
+
+# Manual only. The `mainnet` environment must have required reviewers
+# configured (see DEPLOYMENT.md#ci-approval-gate) so the job pauses for approval.
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Reviewed release tag to deploy
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: mainnet
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - name: Install Stellar CLI
+        run: |
+          curl -fsSL -o stellar-cli.tar.gz https://github.com/stellar/stellar-cli/releases/download/v27.1.0/stellar-cli-27.1.0-x86_64-unknown-linux-gnu.tar.gz
+          tar -xzf stellar-cli.tar.gz && sudo mv stellar /usr/local/bin/stellar
+      - name: Build contract
+        run: make build-contract
+      - name: Deploy to mainnet
+        env:
+          STELLAR_SECRET_KEY: ${{ secrets.MAINNET_DEPLOYER_SECRET }}
+        run: |
+          sha256sum target/wasm32-unknown-unknown/release/trellis_core.wasm
+          stellar contract deploy \
+            --wasm target/wasm32-unknown-unknown/release/trellis_core.wasm \
+            --source-account "$STELLAR_SECRET_KEY" --network mainnet

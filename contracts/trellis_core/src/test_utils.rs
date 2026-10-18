@@ -19,12 +19,61 @@
 //! Both variants share [`deploy`], so the token/contract wiring can never
 //! diverge between them.
 
+// The crate is `#![no_std]`; tests run on a host with std available, and
+// [`deterministic_config`] needs `std::env` to read proptest's variables.
+extern crate std;
+
 use soroban_sdk::{testutils::Address as _, token, vec, Address, BytesN, Env, Vec};
 
 use crate::{
     types::{EscrowStatus, Milestone},
     TrellisContract, TrellisContractClient,
 };
+
+// ---------------------------------------------------------------------------
+// Proptest configuration
+// ---------------------------------------------------------------------------
+
+/// Case count used when `PROPTEST_CASES` is unset or unparsable.
+pub const DEFAULT_PROPTEST_CASES: u32 = 256;
+
+/// RNG seed used when `PROPTEST_RNG_SEED` is unset or unparsable.
+pub const DEFAULT_PROPTEST_SEED: u64 = 0x5454_5454;
+
+/// Deterministic proptest configuration shared by `test_properties.rs` and
+/// `test_panic_boundaries.rs`.
+///
+/// The CI snapshot-validation step re-runs the suite and diffs the regenerated
+/// `test_snapshots/` tree, so the generated values must be identical on every
+/// run.  proptest otherwise seeds its RNG from a random source, which would
+/// make every regeneration produce a spurious diff.
+///
+/// proptest only reads `PROPTEST_CASES` / `PROPTEST_RNG_SEED` when building
+/// `ProptestConfig::default()`, so setting `cases` / `rng_seed` explicitly
+/// would silently override them (#609). Both are therefore read here
+/// directly, falling back to [`DEFAULT_PROPTEST_CASES`] and the fixed
+/// [`DEFAULT_PROPTEST_SEED`], so `PROPTEST_CASES=8192` in CI really runs 8192
+/// cases while default runs stay reproducible.
+pub fn deterministic_config() -> proptest::test_runner::Config {
+    use proptest::test_runner::{Config, RngAlgorithm, RngSeed};
+
+    let cases = std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_PROPTEST_CASES);
+    let seed = std::env::var("PROPTEST_RNG_SEED")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .unwrap_or(DEFAULT_PROPTEST_SEED);
+
+    Config {
+        cases,
+        rng_algorithm: RngAlgorithm::ChaCha,
+        rng_seed: RngSeed::Fixed(seed),
+        ..Config::default()
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Fixture parameters
@@ -129,7 +178,13 @@ pub fn setup_mocked() -> (
     Address,
     TrellisContractClient<'static>,
 ) {
-    let env = Env::default();
+    // Generated suites run hundreds of cases per test; capturing a ledger
+    // snapshot for each one produced thousands of tracked JSON files that
+    // every PR touched and conflicted on (#602). Their invariants are checked
+    // by assertions, so snapshot capture is disabled here.
+    let env = Env::new_with_config(EnvTestConfig {
+        capture_snapshot_at_drop: false,
+    });
     // Installed before `deploy` so it covers the SAC mint below.
     env.mock_all_auths();
     deploy(env, FUZZ_MINT)

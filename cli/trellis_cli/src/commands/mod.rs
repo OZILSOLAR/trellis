@@ -257,6 +257,25 @@ pub enum Commands {
         yes: bool,
     },
 
+    /// Release part of a milestone's funds to the payee.
+    ReleasePartial {
+        /// Agreement ID (hex-encoded, 64 chars).
+        #[arg(long)]
+        agreement_id: String,
+
+        /// Zero-based index of the milestone to release from.
+        #[arg(long)]
+        milestone_id: u32,
+
+        /// Amount to release (positive i128, in token base units).
+        #[arg(long, allow_negative_numbers = true)]
+        amount: String,
+
+        /// Skip the confirmation prompt (for scripting).
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
+
     /// Raise a dispute on a funded or work-submitted milestone.
     RaiseDispute {
         /// Agreement ID (hex-encoded, 64 chars).
@@ -278,6 +297,7 @@ pub enum Commands {
     },
 
     /// Resolve a disputed milestone as the designated dispute resolver.
+    #[command(alias = "resolve")]
     ResolveDispute {
         /// Agreement ID (hex-encoded, 64 chars).
         #[arg(long)]
@@ -291,6 +311,26 @@ pub enum Commands {
         /// Pass false to release funds to the payee (payee wins).
         #[arg(long, default_value = "false")]
         refund_to_payer: bool,
+
+        /// Split ruling: amount to refund to the payer (non-negative i128).
+        /// Requires --payee-amount; conflicts with --refund-to-payer.
+        #[arg(
+            long,
+            requires = "payee_amount",
+            conflicts_with = "refund_to_payer",
+            allow_negative_numbers = true
+        )]
+        payer_amount: Option<String>,
+
+        /// Split ruling: amount to release to the payee (non-negative i128).
+        /// Requires --payer-amount; conflicts with --refund-to-payer.
+        #[arg(
+            long,
+            requires = "payer_amount",
+            conflicts_with = "refund_to_payer",
+            allow_negative_numbers = true
+        )]
+        payee_amount: Option<String>,
 
         /// Skip the confirmation prompt (for scripting).
         #[arg(short = 'y', long = "yes")]
@@ -568,6 +608,13 @@ pub fn dispatch(cmd: Commands, config: &Config, opts: &OutputOpts) -> Result<(),
             yes,
         } => run_approve_release(config, agreement_id, milestone_id, yes, opts),
 
+        Commands::ReleasePartial {
+            agreement_id,
+            milestone_id,
+            amount,
+            yes,
+        } => run_release_partial(config, agreement_id, milestone_id, amount, yes, opts),
+
         Commands::RaiseDispute {
             agreement_id,
             milestone_id,
@@ -579,12 +626,16 @@ pub fn dispatch(cmd: Commands, config: &Config, opts: &OutputOpts) -> Result<(),
             agreement_id,
             milestone_id,
             refund_to_payer,
+            payer_amount,
+            payee_amount,
             yes,
         } => run_resolve_dispute(
             config,
             agreement_id,
             milestone_id,
             refund_to_payer,
+            payer_amount,
+            payee_amount,
             yes,
             opts,
         ),
@@ -1011,6 +1062,49 @@ fn run_approve_release(
     execute(config, "approve_and_release", &args, opts)
 }
 
+/// `stellar contract invoke … -- release_partial …`
+///
+/// Final call signature:
+/// ```
+/// stellar contract invoke … -- release_partial
+///   --agreement-id <hex> --milestone-id <u32> --amount <i128>
+/// ```
+fn run_release_partial(
+    config: &Config,
+    agreement_id: String,
+    milestone_id: u32,
+    amount: String,
+    yes: bool,
+    opts: &OutputOpts,
+) -> Result<(), String> {
+    validate_agreement_id(&agreement_id).unwrap_or_else(|e| fail_validation(&e));
+    let amount = match amount.parse::<i128>() {
+        Ok(a) if a > 0 => a,
+        _ => fail_validation(&format!(
+            "amount must be a positive integer, got '{amount}'"
+        )),
+    };
+
+    confirm_action(
+        &format!(
+            "This will release {amount} from milestone {milestone_id} of agreement {agreement_id} to the payee."
+        ),
+        yes,
+        opts,
+    )?;
+
+    let args = vec![
+        "--agreement-id".to_string(),
+        agreement_id,
+        "--milestone-id".to_string(),
+        milestone_id.to_string(),
+        "--amount".to_string(),
+        amount.to_string(),
+    ];
+
+    execute(config, "release_partial", &args, opts)
+}
+
 /// `stellar contract invoke … -- raise_dispute …`
 ///
 /// Final call signature:
@@ -1065,10 +1159,43 @@ fn run_resolve_dispute(
     agreement_id: String,
     milestone_id: u32,
     refund_to_payer: bool,
+    payer_amount: Option<String>,
+    payee_amount: Option<String>,
     yes: bool,
     opts: &OutputOpts,
 ) -> Result<(), String> {
     validate_agreement_id(&agreement_id).unwrap_or_else(|e| fail_validation(&e));
+
+    // Split ruling (`resolve_dispute_split`): clap guarantees both amounts are
+    // present together and never alongside --refund-to-payer.
+    if let (Some(payer), Some(payee)) = (payer_amount, payee_amount) {
+        let parse = |name: &str, v: &str| match v.parse::<i128>() {
+            Ok(a) if a >= 0 => a,
+            _ => fail_validation(&format!(
+                "{name} must be a non-negative integer, got '{v}'"
+            )),
+        };
+        let payer = parse("payer-amount", &payer);
+        let payee = parse("payee-amount", &payee);
+        confirm_action(
+            &format!(
+                "This will resolve the dispute on milestone {milestone_id} of agreement {agreement_id} with a split: {payer} to the payer, {payee} to the payee."
+            ),
+            yes,
+            opts,
+        )?;
+        let args = vec![
+            "--agreement-id".to_string(),
+            agreement_id,
+            "--milestone-id".to_string(),
+            milestone_id.to_string(),
+            "--payer-amount".to_string(),
+            payer.to_string(),
+            "--payee-amount".to_string(),
+            payee.to_string(),
+        ];
+        return execute(config, "resolve_dispute_split", &args, opts);
+    }
 
     let outcome = if refund_to_payer {
         "refund locked funds to the payer"
@@ -1135,9 +1262,10 @@ fn run_cancel_milestone(
 ///   --agreement-id <hex> --caller <G|C>
 /// ```
 ///
-/// The contract requires no auth — `caller` is only recorded in the
-/// `ttl_extended` event — but the call is still a fee-paying transaction, so
-/// it goes through the same confirmation prompt as other submitting commands.
+/// The contract requires `caller` to authorise the call (it is recorded in the
+/// `ttl_extended` event, so it must be the real signer); pass the source
+/// account's own address. The call is a fee-paying transaction, so it goes
+/// through the same confirmation prompt as other submitting commands.
 fn run_extend_ttl(
     config: &Config,
     agreement_id: String,

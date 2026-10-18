@@ -478,7 +478,6 @@ stderr: {}",
     );
 }
 
-
 // ---------------------------------------------------------------------------
 // Native RPC health probe (#467 / #468)
 // ---------------------------------------------------------------------------
@@ -551,13 +550,80 @@ fn test_health_fails_on_unhealthy_endpoint() {
         .output()
         .expect("failed to execute trellis");
 
-    assert!(!output.status.success(), "unhealthy endpoint must exit non-zero");
+    assert!(
+        !output.status.success(),
+        "unhealthy endpoint must exit non-zero"
+    );
     let envelope: serde_json::Value =
         serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("JSON");
     assert_eq!(envelope["status"], "error");
     assert!(
-        envelope["error"].as_str().unwrap_or("").contains("unhealthy"),
+        envelope["error"]
+            .as_str()
+            .unwrap_or("")
+            .contains("unhealthy"),
         "got: {envelope}"
     );
     ledger.assert();
+}
+
+fn dry_run(args: &[&str]) -> std::process::Output {
+    trellis_cmd()
+        .args(args)
+        .args([
+            "--agreement-id",
+            "0000000000000000000000000000000000000000000000000000000000000001",
+            "--milestone-id",
+            "0",
+            "--dry-run",
+        ])
+        .output()
+        .expect("failed to execute trellis")
+}
+
+#[test]
+fn test_resolve_split_dry_run() {
+    let out = dry_run(&["resolve", "--payer-amount", "30", "--payee-amount", "70"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("resolve_dispute_split"));
+}
+
+#[test]
+fn test_resolve_split_rejects_mixed_and_negative_flags() {
+    let mixed = dry_run(&[
+        "resolve",
+        "--refund-to-payer",
+        "--payer-amount",
+        "1",
+        "--payee-amount",
+        "1",
+    ]);
+    assert!(!mixed.status.success());
+    let lone = dry_run(&["resolve", "--payer-amount", "1"]);
+    assert!(!lone.status.success());
+    let negative = dry_run(&["resolve", "--payer-amount", "-1", "--payee-amount", "1"]);
+    assert!(!negative.status.success());
+}
+
+#[test]
+fn test_release_partial_dry_run() {
+    let out = dry_run(&["release-partial", "--amount", "500"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stdout).contains("release_partial"));
+}
+
+#[test]
+fn test_release_partial_rejects_bad_amounts() {
+    for bad in ["0", "-5", "abc"] {
+        let out = dry_run(&["release-partial", "--amount", bad]);
+        assert!(!out.status.success(), "amount {bad} should be rejected");
+    }
 }

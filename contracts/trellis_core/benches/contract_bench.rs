@@ -321,6 +321,39 @@ fn bench_batch_lock_funds() {
     );
 }
 
+/// #611: a large batch makes the per-milestone savings visible — one
+/// milestone read each and a single summed token transfer for the batch.
+fn bench_batch_lock_funds_50() {
+    let (env, payer, payee, dispute_resolver, token_address, client) = setup();
+    let id = agreement_id(&env, 10);
+
+    client.init(
+        &id,
+        &payer,
+        &payee,
+        &token_address,
+        &n_milestones(&env, 50, 100),
+        &dispute_resolver,
+    );
+
+    let mut milestone_ids: SorobanVec<u32> = SorobanVec::new(&env);
+    for i in 0..50u32 {
+        milestone_ids.push_back(i);
+    }
+
+    env.cost_estimate().budget().reset_default();
+
+    client.batch_lock_funds(&id, &milestone_ids);
+
+    let cpu = env.cost_estimate().budget().cpu_instruction_cost();
+    let mem = env.cost_estimate().budget().memory_bytes_cost();
+
+    println!(
+        r#"{{"benchmark":"batch_lock_funds_50","cpu_instructions":{},"memory_bytes":{}}}"#,
+        cpu, mem
+    );
+}
+
 fn bench_get_agreement() {
     let (env, payer, payee, dispute_resolver, token_address, client) = setup();
     let id = agreement_id(&env, 9);
@@ -370,6 +403,8 @@ fn main() {
     bench_resolve_dispute();
     println!(",");
     bench_batch_lock_funds();
+    println!(",");
+    bench_batch_lock_funds_50();
     println!(",");
     bench_get_agreement();
     println!("]");

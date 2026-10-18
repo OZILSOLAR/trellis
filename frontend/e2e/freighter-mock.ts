@@ -24,8 +24,11 @@ export interface FreighterMockOptions {
  * this function's `signXdr` via `page.exposeFunction`), gets back a signed
  * XDR, and relays it as the response.
  */
-export async function installFreighterMock(page: Page, opts: FreighterMockOptions): Promise<void> {
-  const keypair = Keypair.fromSecret(opts.secret);
+export async function installFreighterMock(
+  page: Page,
+  opts: FreighterMockOptions,
+): Promise<{ switchAccount: (address: string, secret: string) => Promise<void> }> {
+  let keypair = Keypair.fromSecret(opts.secret);
 
   await page.exposeFunction('__mockSignTransaction', (xdr: string) => {
     const tx = TransactionBuilder.fromXDR(xdr, opts.networkPassphrase);
@@ -35,6 +38,7 @@ export async function installFreighterMock(page: Page, opts: FreighterMockOption
 
   await page.addInitScript((mock: { address: string; networkPassphrase: string; rpcUrl: string }) => {
     (window as unknown as { freighter: boolean }).freighter = true;
+    (window as unknown as { __mockAddress: string }).__mockAddress = mock.address;
 
     window.addEventListener('message', async (event: MessageEvent) => {
       const data = event.data as { source?: string; type?: string; messageId?: number; transactionXdr?: string };
@@ -46,7 +50,7 @@ export async function installFreighterMock(page: Page, opts: FreighterMockOption
         const signedTransaction = await (
           window as unknown as { __mockSignTransaction: (xdr: string) => Promise<string> }
         ).__mockSignTransaction(data.transactionXdr ?? '');
-        window.postMessage({ ...base, signedTransaction, signerAddress: mock.address }, window.location.origin);
+        window.postMessage({ ...base, signedTransaction, signerAddress: (window as unknown as { __mockAddress: string }).__mockAddress }, window.location.origin);
         return;
       }
 
@@ -55,8 +59,8 @@ export async function installFreighterMock(page: Page, opts: FreighterMockOption
           ...base,
           isConnected: true,
           isAllowed: true,
-          publicKey: mock.address,
-          address: mock.address,
+          publicKey: (window as unknown as { __mockAddress: string }).__mockAddress,
+          address: (window as unknown as { __mockAddress: string }).__mockAddress,
           networkDetails: {
             network: 'STANDALONE',
             networkName: 'Standalone',
@@ -69,4 +73,15 @@ export async function installFreighterMock(page: Page, opts: FreighterMockOption
       );
     });
   }, opts);
+
+  // Lets one test act as several roles (payer, then payee, ...) by swapping
+  // the identity the mocked wallet reports and signs with.
+  return {
+    switchAccount: async (address: string, secret: string) => {
+      keypair = Keypair.fromSecret(secret);
+      await page.evaluate((a) => {
+        (window as unknown as { __mockAddress: string }).__mockAddress = a;
+      }, address);
+    },
+  };
 }

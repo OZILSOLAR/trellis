@@ -48,25 +48,11 @@
 
 use proptest::prelude::*;
 
-/// Deterministic proptest configuration.
-///
-/// The CI snapshot-validation step re-runs the suite and diffs the regenerated
-/// `test_snapshots/` tree, so the generated values must be identical on every
-/// run.  proptest otherwise seeds its RNG from a random source, which would
-/// make every regeneration produce a spurious diff.
-fn deterministic_config() -> ProptestConfig {
-    ProptestConfig {
-        cases: 256,
-        rng_algorithm: proptest::test_runner::RngAlgorithm::ChaCha,
-        rng_seed: proptest::test_runner::RngSeed::Fixed(0x5454_5454),
-        ..ProptestConfig::default()
-    }
-}
 use soroban_sdk::{token, BytesN};
 
 use crate::{
     errors::TrellisError,
-    test_utils::{agreement_id, milestones_from_amounts, setup_mocked},
+    test_utils::{agreement_id, deterministic_config, milestones_from_amounts, setup_mocked},
     types::EscrowStatus,
 };
 

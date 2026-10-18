@@ -5,7 +5,7 @@
 .PHONY: build-contract build-cli build-frontend
 .PHONY: test-contract test-cli test-snapshots-update test-frontend
 .PHONY: lint-contract lint-frontend typecheck-frontend
-.PHONY: changelog
+.PHONY: changelog deploy-mainnet dev-up
 
 help: ## list all targets
 	@echo "Trellis Protocol — Build Targets"
@@ -44,7 +44,7 @@ test-contract: ## run only contract tests
 test-cli: ## run only CLI tests
 	cargo test --frozen --manifest-path cli/trellis_cli/Cargo.toml
 
-test-snapshots-update: ## regenerate Soroban test snapshots (commit the result)
+test-snapshots-update: ## regenerate Soroban test snapshots for test.rs/test_storage.rs (commit the result)
 	SOROBAN_TEST_SNAPSHOT_FILE=overwrite cargo test --manifest-path contracts/trellis_core/Cargo.toml
 	@echo "Snapshots regenerated. Review the diff with: git diff contracts/trellis_core/test_snapshots/"
 
@@ -95,6 +95,22 @@ deploy: ## deploy contract to testnet (see DEPLOYMENT.md)
 		--wasm target/wasm32-unknown-unknown/release/trellis_core.wasm \
 		--source $(DEPLOYER_IDENTITY) \
 		--network testnet
+
+MAINNET_IDENTITY ?= trellis-mainnet-deployer
+
+deploy-mainnet: ## deploy contract to MAINNET (real funds; see DEPLOYMENT.md#mainnet-deployment)
+	@echo "=== Deploying Trellis to Stellar MAINNET (real funds, irreversible) ==="
+	@test -f target/wasm32-unknown-unknown/release/trellis_core.wasm || { echo "Build first: make build-contract"; exit 1; }
+	@echo "WASM sha256: $$(sha256sum target/wasm32-unknown-unknown/release/trellis_core.wasm | cut -d' ' -f1)"
+	@echo "Identity:    $(MAINNET_IDENTITY)"
+	@read -p "Type 'mainnet' to confirm the reviewed WASM hash above: " ans && [ "$$ans" = "mainnet" ] || { echo "Aborted."; exit 1; }
+	stellar contract deploy \
+		--wasm target/wasm32-unknown-unknown/release/trellis_core.wasm \
+		--source $(MAINNET_IDENTITY) \
+		--network mainnet
+
+dev-up: ## start local stack: Stellar node + contract + frontend (docker compose)
+	docker compose up
 
 # ── Clean ──────────────────────────────────────────────────────────────────
 

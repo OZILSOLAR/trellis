@@ -473,6 +473,8 @@ Trellis is a monorepo with three layers:
 
 ### Contract Entrypoints
 
+The contract exposes 18 public entrypoints. CI (`scripts/check-readme-entrypoints.sh`) fails if a `pub fn` in `contracts/trellis_core/src/lib.rs` is missing from this table.
+
 | Function | Caller | Effect |
 |---|---|---|
 | `init` | Payer | Creates a new agreement with one or more milestones (each `amount` must be strictly positive) |
@@ -482,16 +484,17 @@ Trellis is a monorepo with three layers:
 | `release_partial` | Payer | Releases part of a `Funded`/`WorkSubmitted` milestone's escrowed funds as a progress payment; the milestone completes once fully released |
 | `raise_dispute` | Payer or Payee | Flags a milestone for resolver review |
 | `resolve_dispute` | Dispute Resolver | Rules on a dispute — refunds payer or pays payee |
+| `resolve_dispute_split` | Dispute Resolver | Settles a dispute with an explicit split: `payer_amount` and `payee_amount` must be non-negative and sum exactly to the milestone's still-escrowed remainder (after any `release_partial`) |
 | `rotate_resolver` | Payer and Payee | Replaces the dispute resolver when the incumbent is lost, compromised or unresponsive; the outgoing resolver does not have to sign |
 | `cancel_unfunded_milestone` | Payer | Cancels a milestone that was never funded — status becomes `Cancelled`, never `Refunded` (reserved for dispute refunds) |
 | `get_agreement` | Anyone | Returns the full current state of an agreement (read-only) |
 | `get_total_amount` | Anyone | Returns the agreement's total value — sum of all milestone amounts (read-only) |
 | `batch_lock_funds` | Payer | Funds multiple milestones atomically in one transaction |
 | `get_milestone` | Anyone | Returns a single milestone's state, or none if the agreement or milestone does not exist (read-only) |
-| `extend_agreement_ttl` | Anyone | Renews an agreement's ledger TTL to avoid archival |
+| `extend_agreement_ttl` | Anyone (`caller` must sign) | Renews an agreement's ledger TTL to avoid archival; the signing `caller` is recorded in the event |
 | `set_milestone_deadline` | Payer | Sets an optional deadline (ledger timestamp) on a still-`Pending` milestone |
 | `get_milestone_deadline` | Anyone | Returns a milestone's deadline, if one is set (read-only) |
-| `expire_milestone` | Anyone | After the deadline, closes a stalled `Pending` or `Funded` milestone as `Refunded`, returning any locked funds to the payer |
+| `expire_milestone` | Anyone | After the deadline, closes a stalled milestone: a never-funded `Pending` one becomes `Cancelled`, a `Funded` one becomes `Refunded` with the locked funds returned to the payer |
 
 <details>
 <summary>🧬 <strong>Native ScVal Encoding</strong></summary>
@@ -502,8 +505,8 @@ The CLI builds Soroban <code>ScVal</code> arguments natively in Rust instead of 
 <details>
 <summary>📦 <strong>Storage Lifetime</strong></summary>
 <br />
-Soroban archives persistent ledger entries once their TTL expires, so an agreement that is never touched would eventually be lost. Every state-mutating entrypoint renews the agreement's TTL to ~30 days automatically. Agreements that stay idle longer than that — a long delivery window, a stalled dispute — need <code>extend_agreement_ttl</code> called before the TTL runs out; any address may call it, and the caller pays the rent. Use <code>trellis extend-ttl</code> for a one-off renewal; the scheduled TTL keeper described in <a href="./DEPLOYMENT.md#agreement-ttl-keeper">DEPLOYMENT.md</a> renews tracked agreements weekly.
-Soroban archives persistent ledger entries once their TTL expires, so an agreement that is never touched would eventually be lost. Every state-mutating entrypoint renews the agreement's TTL to ~30 days automatically, and the view functions (<code>get_agreement</code>, <code>get_milestone</code>, <code>get_total_amount</code>) renew it as well whenever a read finds the remaining TTL below the threshold — so a read is not strictly side-effect free, and the caller pays for the extension. Reading keeps a watched agreement alive between transitions rather than leaving it to expire. Agreements that stay idle longer than that — a long delivery window, a stalled dispute — need <code>extend_agreement_ttl</code> called before the TTL runs out; any address may call it, and the caller pays the rent.
+Soroban archives persistent ledger entries once their TTL expires, so an agreement that is never touched would eventually be lost. Every state-mutating entrypoint renews the agreement's TTL to ~30 days automatically. Agreements that stay idle longer than that — a long delivery window, a stalled dispute — need <code>extend_agreement_ttl</code> called before the TTL runs out; any address may call it — `caller` must sign its own call — and the caller pays the rent. Use <code>trellis extend-ttl</code> for a one-off renewal; the scheduled TTL keeper described in <a href="./DEPLOYMENT.md#agreement-ttl-keeper">DEPLOYMENT.md</a> renews tracked agreements weekly.
+Soroban archives persistent ledger entries once their TTL expires, so an agreement that is never touched would eventually be lost. Every state-mutating entrypoint renews the agreement's TTL to ~30 days automatically, and the view functions (<code>get_agreement</code>, <code>get_milestone</code>, <code>get_total_amount</code>) renew it as well whenever a read finds the remaining TTL below the threshold — so a read is not strictly side-effect free, and the caller pays for the extension. Reading keeps a watched agreement alive between transitions rather than leaving it to expire. Agreements that stay idle longer than that — a long delivery window, a stalled dispute — need <code>extend_agreement_ttl</code> called before the TTL runs out; any address may call it — `caller` must sign its own call — and the caller pays the rent.
 </details>
 
 <details>
@@ -558,6 +561,14 @@ The new resolver must not be the payer or the payee — the same neutrality inva
 - [`stellar` CLI](https://developers.stellar.org/docs/tools/cli/install-cli) 26.x+
 - Node.js 20+ (for the frontend)
 
+### 🐳 One-command local stack (Docker)
+
+```bash
+docker compose up   # or: make dev-up
+```
+
+Starts a local Stellar node, builds and deploys the contract, writes `frontend/.env.local`, and serves the frontend at **http://localhost:5173**. Point the CLI at it with `--network custom --rpc-url http://localhost:8000/soroban/rpc`. The manual steps below remain available as an alternative.
+
 ### 🖥️ Run the frontend locally
 
 ```bash
@@ -567,7 +578,7 @@ npm install
 npm run dev
 ```
 
-Open **http://localhost:5173** to see the animated landing page with the particle network background, typewriter effects, live contract activity stats (agreements created / milestones locked, within the RPC event retention window), and full agreement management UI.
+The navbar network selector (testnet / mainnet / futurenet / custom) switches networks at runtime; the choice is saved in `localStorage` and defaults to your `.env` values. Open **http://localhost:5173** to see the animated landing page with the particle network background, typewriter effects, live contract activity stats (agreements created / milestones locked, within the RPC event retention window), and full agreement management UI.
 
 ### 📡 Run the event indexer (optional)
 
@@ -863,7 +874,7 @@ Supported shells: `bash`, `zsh`, `fish`, `elvish`, `powershell`.
 
 ### ✅ Complete
 
-- Core Soroban escrow contract - all 13 entrypoints implemented and tested
+- Core Soroban escrow contract - all 18 entrypoints implemented and tested
 - Full state machine — happy path, dispute resolution, and cancellation paths
 - Contract test suite - 89 tests in the Soroban sandbox
 - Full CLI — all 8 commands wired end-to-end with JSON, dry-run, and human-readable output modes

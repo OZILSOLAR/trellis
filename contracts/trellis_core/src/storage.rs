@@ -127,6 +127,8 @@ pub fn write_agreement(
         total_amount: agreement.total_amount,
         milestone_count: agreement.milestones.len(),
         released_amounts: agreement.released_amounts.clone(),
+        open_milestones: agreement.milestones.len(),
+        refunded_milestones: 0,
     };
 
     let header_key = DataKey::Agreement(id.clone());

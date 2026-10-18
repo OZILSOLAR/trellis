@@ -17,14 +17,17 @@ pub enum EscrowStatus {
     Completed,
     /// Either party raised a dispute; awaiting resolver arbitration.
     Disputed,
-    /// Funds returned to the payer after a dispute ruling in the payer's
-    /// favour. Written only by `resolve_dispute` — real tokens moved.
+    /// Escrowed funds returned to the payer — real tokens moved. Written by
+    /// `resolve_dispute` / `resolve_dispute_split` on a ruling in the payer's
+    /// favour, and by `expire_milestone` when a `Funded` milestone passes its
+    /// deadline without work being submitted.
     Refunded,
-    /// Milestone cancelled while still `Pending`, before any funds were ever
-    /// locked. Written only by `cancel_unfunded_milestone`, which moves no
-    /// tokens — kept distinct from [`EscrowStatus::Refunded`] so readers of
-    /// on-chain state can tell a never-funded cancellation apart from a
-    /// dispute refund without replaying the event log.
+    /// Milestone closed while still `Pending`, before any funds were ever
+    /// locked. Written by `cancel_unfunded_milestone` and by
+    /// `expire_milestone` on a never-funded milestone; neither moves tokens.
+    /// Kept distinct from [`EscrowStatus::Refunded`] so readers of on-chain
+    /// state can tell a never-funded closure apart from a real refund without
+    /// replaying the event log.
     Cancelled,
 }
 
@@ -179,4 +182,13 @@ pub struct AgreementHeader {
     /// grows, so keeping it with the agreement-level data leaves every other
     /// transition writing exactly one entry, as before.
     pub released_amounts: Map<u32, i128>,
+    /// Milestones not yet `Completed` or `Refunded`.
+    ///
+    /// Starts at `milestone_count` and is decremented by every transition into
+    /// one of those two states, so completion checks never read the milestone
+    /// entries.
+    pub open_milestones: u32,
+    /// How many milestones ended `Refunded`; the other settled ones are
+    /// `Completed`. Only used to fill the `agreement_completed` event.
+    pub refunded_milestones: u32,
 }
