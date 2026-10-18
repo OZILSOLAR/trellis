@@ -15,6 +15,49 @@ export interface Milestone {
   amount: string;
   status: EscrowStatus;
   proof_uri: string | null;
+  /**
+   * Cumulative amount already paid out via `release_partial`, decoded from the
+   * agreement's `released_amounts` map. Absent / `'0'` when nothing has been
+   * released. Use {@link remainingAmount} for what is still escrowed.
+   */
+  released?: string;
+}
+
+/** Parses an integer base-unit amount, treating missing or malformed input as zero. */
+export function toBaseUnits(value: string | undefined | null): bigint {
+  try {
+    return value ? BigInt(value) : 0n;
+  } catch {
+    return 0n;
+  }
+}
+
+/**
+ * Amount still held in escrow for a milestone: its configured `amount` minus
+ * whatever `release_partial` has already paid out. Mirrors the contract's
+ * `remaining_amount` helper, in base units.
+ */
+export function remainingAmount(milestone: Pick<Milestone, 'amount' | 'released'>): bigint {
+  const remaining = toBaseUnits(milestone.amount) - toBaseUnits(milestone.released);
+  return remaining > 0n ? remaining : 0n;
+}
+
+/**
+ * Looks up one milestone's cumulative release in a decoded `released_amounts`
+ * (`Map<u32, i128>`). `scValToNative` turns a Soroban map into a plain object
+ * keyed by the stringified milestone index, but a JS `Map` is accepted too.
+ */
+export function releasedAmountFor(releasedAmounts: unknown, milestoneId: number): string {
+  let value: unknown;
+  if (releasedAmounts instanceof Map) {
+    value = releasedAmounts.get(milestoneId) ?? releasedAmounts.get(String(milestoneId));
+  } else if (typeof releasedAmounts === 'object' && releasedAmounts !== null) {
+    value = (releasedAmounts as Record<string, unknown>)[String(milestoneId)];
+  }
+  if (typeof value === 'bigint' || typeof value === 'number' || typeof value === 'string') {
+    return value.toString();
+  }
+  return '0';
 }
 
 export type EscrowStatus =
@@ -47,6 +90,7 @@ export interface RawAgreementResponse {
   token?: string;
   dispute_resolver?: string;
   milestones?: RawMilestone[];
+  released_amounts?: unknown;
 }
 
 export interface RawEventResponse {
@@ -176,6 +220,7 @@ interface RawAgreement {
   token: string;
   dispute_resolver: string;
   milestones: RawMilestone[];
+  released_amounts?: unknown;
 }
 
 async function simulateRead<T>(method: string, args: xdr.ScVal[]): Promise<T> {
@@ -212,11 +257,12 @@ export async function getAgreement(agreementId: string): Promise<Agreement> {
     payee: raw.payee,
     token: raw.token,
     dispute_resolver: raw.dispute_resolver,
-    milestones: raw.milestones.map((m) => ({
-      id: m.id,
+    milestones: raw.milestones.map((m, index) => ({
+      id: m.id ?? index,
       amount: m.amount.toString(),
       status: m.status[0],
       proof_uri: m.proof_uri ?? null,
+      released: releasedAmountFor(raw.released_amounts, m.id ?? index),
     })),
   };
 }

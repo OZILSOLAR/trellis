@@ -55,3 +55,19 @@ export function hexToBytes(hex: string): Uint8Array {
   }
   return bytes
 }
+
+/**
+ * Format a duration in seconds as a compact countdown, e.g. `2d 3h 4m` or
+ * `4m 05s`. Seconds are only shown once less than an hour remains.
+ */
+export function formatCountdown(totalSeconds: number): string {
+  const seconds = Math.max(0, Math.floor(totalSeconds))
+  const days = Math.floor(seconds / 86_400)
+  const hours = Math.floor((seconds % 86_400) / 3_600)
+  const minutes = Math.floor((seconds % 3_600) / 60)
+  const secs = seconds % 60
+
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`
+  if (hours > 0) return `${hours}h ${minutes}m`
+  return `${minutes}m ${String(secs).padStart(2, '0')}s`
+}
