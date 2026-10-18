@@ -11,6 +11,10 @@ contracts/trellis_core/.env
 *.swo
 *~
 
+# Claude Code settings — per-user tool permissions must never be committed,
+# otherwise they auto-approve Bash/Write/Edit/WebFetch for anyone reviewing a PR.
+.claude/
+
 # Frontend build output — never commit generated artifacts.
 frontend/dist/
 

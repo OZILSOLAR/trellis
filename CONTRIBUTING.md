@@ -399,6 +399,8 @@ cd ../..
 
 The Soroban test framework records ledger state at each test step into JSON files under `contracts/trellis_core/test_snapshots/`. These files are committed to the repository so reviewers can see exactly what state the contract produces for every test case.
 
+**Generated suites do not write snapshots.** `test_properties.rs` and `test_panic_boundaries.rs` run hundreds of generated cases per test, so their shared fixture `test_utils::setup_mocked` builds its `Env` with `EnvTestConfig { capture_snapshot_at_drop: false }`. Only the hand-written suites (`test.rs`, `test_storage.rs`) produce snapshot files, so a PR that adds one test changes only the files it touches.
+
 **Why this matters:** If you change contract logic or add/remove entrypoints, the snapshot files will diverge from what the tests actually produce. A PR with stale snapshots will fail the CI snapshot-validation step, even if `cargo test` itself passes.
 
 ### Regenerating snapshots
@@ -440,6 +442,7 @@ If any snapshot file differs from what is committed, the build fails with an err
 - Do not add `test_snapshots/` to `.gitignore`. The files must be tracked.
 - If you add a new test, its snapshot file will be created by `make test-snapshots-update` and must be committed.
 - If you delete a test, delete its snapshot file from the repository in the same PR.
+- Do not re-enable snapshot capture in `setup_mocked` or add a capturing `Env` to the property or panic-boundary suites; it would reintroduce thousands of generated files.
 
 ## 14. Code Style
 

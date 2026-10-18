@@ -44,7 +44,7 @@ test-contract: ## run only contract tests
 test-cli: ## run only CLI tests
 	cargo test --frozen --manifest-path cli/trellis_cli/Cargo.toml
 
-test-snapshots-update: ## regenerate Soroban test snapshots (commit the result)
+test-snapshots-update: ## regenerate Soroban test snapshots for test.rs/test_storage.rs (commit the result)
 	SOROBAN_TEST_SNAPSHOT_FILE=overwrite cargo test --manifest-path contracts/trellis_core/Cargo.toml
 	@echo "Snapshots regenerated. Review the diff with: git diff contracts/trellis_core/test_snapshots/"
 

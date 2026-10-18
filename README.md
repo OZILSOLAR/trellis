@@ -473,6 +473,8 @@ Trellis is a monorepo with three layers:
 
 ### Contract Entrypoints
 
+The contract exposes 18 public entrypoints. CI (`scripts/check-readme-entrypoints.sh`) fails if a `pub fn` in `contracts/trellis_core/src/lib.rs` is missing from this table.
+
 | Function | Caller | Effect |
 |---|---|---|
 | `init` | Payer | Creates a new agreement with one or more milestones (each `amount` must be strictly positive) |
@@ -482,6 +484,7 @@ Trellis is a monorepo with three layers:
 | `release_partial` | Payer | Releases part of a `Funded`/`WorkSubmitted` milestone's escrowed funds as a progress payment; the milestone completes once fully released |
 | `raise_dispute` | Payer or Payee | Flags a milestone for resolver review |
 | `resolve_dispute` | Dispute Resolver | Rules on a dispute — refunds payer or pays payee |
+| `resolve_dispute_split` | Dispute Resolver | Settles a dispute with an explicit split: `payer_amount` and `payee_amount` must be non-negative and sum exactly to the milestone's still-escrowed remainder (after any `release_partial`) |
 | `rotate_resolver` | Payer and Payee | Replaces the dispute resolver when the incumbent is lost, compromised or unresponsive; the outgoing resolver does not have to sign |
 | `cancel_unfunded_milestone` | Payer | Cancels a milestone that was never funded — status becomes `Cancelled`, never `Refunded` (reserved for dispute refunds) |
 | `get_agreement` | Anyone | Returns the full current state of an agreement (read-only) |
@@ -864,7 +867,7 @@ Supported shells: `bash`, `zsh`, `fish`, `elvish`, `powershell`.
 
 ### ✅ Complete
 
-- Core Soroban escrow contract - all 13 entrypoints implemented and tested
+- Core Soroban escrow contract - all 18 entrypoints implemented and tested
 - Full state machine — happy path, dispute resolution, and cancellation paths
 - Contract test suite - 89 tests in the Soroban sandbox
 - Full CLI — all 8 commands wired end-to-end with JSON, dry-run, and human-readable output modes

@@ -101,17 +101,15 @@ cargo mutants --timeout 120
 
 **Target:** >80% mutation kill rate
 
-### 5. Snapshot Tests (`test_snapshots/`)
+### 5. Snapshot Files (`test_snapshots/`)
 
-Property tests generate deterministic snapshots of contract events and state:
+The hand-written suites (`test.rs`, `test_storage.rs`) record ledger state for
+each test into `test_snapshots/`. Regenerate them after a contract change with
+`make test-snapshots-update` and commit the result; CI fails on stale snapshots.
 
-```bash
-# Review snapshot changes
-cargo insta review
-
-# Accept all pending snapshots
-cargo insta accept
-```
+Property and panic-boundary tests do **not** write snapshots: their shared
+fixture `setup_mocked` uses `EnvTestConfig { capture_snapshot_at_drop: false }`,
+because one file per generated case added thousands of tracked files.
 
 ## CI Integration
 

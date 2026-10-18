@@ -31,5 +31,8 @@
 # --- CI workflows and GitHub configuration --------------------------------------
 /.github/                           @ALLEN-AYODEJI @Oryke @Felamsy
 
+# --- AI agent configuration (gitignored; any attempt to re-add needs review) -----
+/.claude/                           @ALLEN-AYODEJI
+
 # --- Documentation and governance files ------------------------------------------
 /*.md                               @ALLEN-AYODEJI

@@ -43,15 +43,29 @@ jobs:
   semgrep:
     name: Semgrep SAST scan
     runs-on: ubuntu-latest
+    # returntocorp/semgrep-action is deprecated; run the official CLI image
+    # directly. `--error` exits non-zero on any finding, so a rule violation
+    # still fails the job.
+    container:
+      image: semgrep/semgrep:1.181.0
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
 
       - name: Run Semgrep
-        uses: returntocorp/semgrep-action@v1
-        with:
-          config: .semgrep/soroban-rules.yaml
+        run: semgrep scan --config .semgrep/soroban-rules.yaml --error --metrics=off
+
+  readme-entrypoints:
+    name: README documents every contract entrypoint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Check README entrypoint table
+        run: ./scripts/check-readme-entrypoints.sh
 
   supply-chain:
     name: Dependency vulnerability scan (cargo audit + cargo deny)
@@ -70,10 +84,12 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
 
       - name: Cache cargo registry
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # cargo-audit checks the dependency graph against the RustSec advisory
       # database.  The ignore list in .cargo/audit.toml mirrors deny.toml so
@@ -114,7 +130,7 @@ jobs:
       # wasm32-unknown-unknown target, rustfmt, and clippy.  rustup reads the
       # file automatically, so no separate toolchain-install step is needed.
       - name: Cache cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       # Verify the workspace lockfile is consistent with Cargo.toml. This
       # prevents accidental dependency changes from being merged without
@@ -162,12 +178,13 @@ jobs:
         uses: actions/checkout@v7
 
       - name: Install Rust stable
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           targets: wasm32-unknown-unknown
 
       - name: Cache cargo registry and build artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
       - name: Install stellar CLI
         run: |
